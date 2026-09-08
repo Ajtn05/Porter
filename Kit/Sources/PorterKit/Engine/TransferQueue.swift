@@ -2,16 +2,16 @@ import Foundation
 
 /// The durable transfer queue.
 ///
-/// Survives quit, crash, and reboot. On relaunch the app can offer to carry on
-/// exactly where it stopped, because both the item list and each item's byte
-/// count are on disk alongside the `.porterpart` files they describe.
+/// Persists across quit, crash, and reboot. Both the item list and each item's
+/// byte count are stored on disk alongside the `.porterpart` files they
+/// describe, so a relaunch can resume where the previous run stopped.
 public actor TransferQueue {
     private var items: [TransferItem] = []
     private var order: [UUID] = []
     private let storeURL: URL
     private var saveTask: Task<Void, Never>?
-    /// Writes are debounced: a 20 GB batch would otherwise rewrite the manifest
-    /// thousands of times a second for no benefit.
+    /// How long to coalesce writes. Without debouncing, a large batch would
+    /// rewrite the manifest thousands of times a second.
     private let saveDebounce: Duration
 
     public init(storeURL: URL? = nil, saveDebounce: Duration = .milliseconds(750)) {
@@ -37,8 +37,8 @@ public actor TransferQueue {
 
         items = stored.map { item in
             var item = item
-            // Anything that claimed to be in flight when we died is not in
-            // flight now. Requeue rather than trusting a stale "running".
+            // Nothing is in flight after a relaunch, so requeue rather than
+            // trusting a stale active state.
             if item.state.isActive || item.state == .paused {
                 item.state = .queued
             }
@@ -53,8 +53,7 @@ public actor TransferQueue {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(snapshot) else { return }
-        // Atomic: a crash mid-write must not leave an unreadable manifest and
-        // lose the user's queue.
+        // Atomic, so a crash mid-write cannot leave an unreadable manifest.
         try? data.write(to: storeURL, options: .atomic)
     }
 
@@ -92,7 +91,7 @@ public actor TransferQueue {
         scheduleSave()
     }
 
-    /// Takes the next item that is ready to run, honouring FIFO order.
+    /// Returns the next item ready to run, in FIFO order.
     public func nextQueued(excluding running: Set<UUID>) -> TransferItem? {
         for id in order where !running.contains(id) {
             if let item = items.first(where: { $0.id == id }), item.state == .queued {
@@ -110,8 +109,10 @@ public actor TransferQueue {
         return items[index]
     }
 
-    /// Byte-count updates during a transfer, kept out of `update` so they can
-    /// skip the disk write entirely; the periodic checkpoint covers durability.
+    /// Records a byte count during a transfer.
+    ///
+    /// Separate from `update` so these frequent writes skip the disk entirely;
+    /// the engine's periodic checkpoint provides durability.
     public func recordProgress(_ id: UUID, bytesTransferred: Int64) {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
         items[index].bytesTransferred = bytesTransferred
@@ -123,7 +124,7 @@ public actor TransferQueue {
         scheduleSave()
     }
 
-    /// Clears finished items but keeps failures, which the user still needs to see.
+    /// Removes completed and skipped items, leaving failures in place.
     public func clearCompleted() {
         let doomed = Set(items.filter { $0.state == .completed || $0.state == .skipped }.map(\.id))
         remove(doomed)

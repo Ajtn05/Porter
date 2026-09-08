@@ -2,18 +2,17 @@ import Foundation
 import IOKit
 import IOKit.usb
 
-/// Watches the USB bus and reports Android devices, whether or not they are
-/// currently sharing any files.
+/// Watches the USB bus and reports Android devices, whether or not they expose
+/// storage.
 ///
-/// This is deliberately independent of both adb and MTP. It is the only layer
-/// that can tell "nothing is plugged in" apart from "a phone is plugged in and
-/// set to charge only", which is the single most common reason people think a
-/// transfer app is broken.
+/// Independent of both adb and MTP, and so the only layer that can distinguish
+/// "nothing is plugged in" from "a phone is plugged in, set to charge only".
 public final class USBDeviceMonitor: @unchecked Sendable {
 
     public struct Snapshot: Hashable, Sendable {
         public var descriptor: USBDescriptor
-        /// True when the phone publishes MTP or ADB. False means charge-only.
+        /// True when the device publishes an MTP or ADB interface. False means
+        /// charge-only.
         public var exposesStorage: Bool
         public var manufacturerGuess: String?
     }
@@ -28,15 +27,15 @@ public final class USBDeviceMonitor: @unchecked Sendable {
 
     deinit { stopUnsafely() }
 
-    /// Begins watching. `onChange` fires immediately with the current state and
-    /// then on every attach or detach.
+    /// Starts watching. `onChange` fires immediately with the current state,
+    /// then on every attach and detach.
     public func start(onChange: @escaping @Sendable ([Snapshot]) -> Void) {
         queue.async { [self] in
             handler = onChange
 
             guard let port = IONotificationPortCreate(kIOMainPortDefault) else {
-                // Without notifications we still deliver one snapshot rather
-                // than leaving the UI permanently empty.
+                // Notifications are unavailable, so deliver a single snapshot
+                // rather than nothing at all.
                 onChange(Self.currentDevices())
                 return
             }
@@ -47,13 +46,13 @@ public final class USBDeviceMonitor: @unchecked Sendable {
             let callback: IOServiceMatchingCallback = { refcon, iterator in
                 guard let refcon else { return }
                 let monitor = Unmanaged<USBDeviceMonitor>.fromOpaque(refcon).takeUnretainedValue()
-                // The iterator MUST be drained or the notification never fires again.
+                // The iterator must be drained or the notification never fires again.
                 monitor.drain(iterator)
                 monitor.publish()
             }
 
             // IOServiceAddMatchingNotification consumes a reference to the
-            // matching dictionary on each call, so each one gets its own.
+            // matching dictionary, so each call gets its own.
             _ = IOServiceAddMatchingNotification(
                 port, kIOMatchedNotification,
                 IOServiceMatching(kIOUSBHostDeviceClassName),
@@ -93,7 +92,7 @@ public final class USBDeviceMonitor: @unchecked Sendable {
         handler?(Self.currentDevices())
     }
 
-    /// One synchronous pass over the bus. Cheap enough to call on every change.
+    /// Makes one synchronous pass over the bus. Cheap enough to call per change.
     public static func currentDevices() -> [Snapshot] {
         var iterator: io_iterator_t = 0
         guard IOServiceGetMatchingServices(
@@ -134,12 +133,10 @@ public final class USBDeviceMonitor: @unchecked Sendable {
         )
     }
 
-    /// Reads the interface descriptors the device is currently publishing.
+    /// Reads the interface descriptors the device currently publishes.
     ///
-    /// Switching the phone between "charging" and "file transfer" re-enumerates
-    /// the USB configuration, so this set changes live — which is exactly the
-    /// signal the empty state needs in order to update the moment the user
-    /// follows the instructions.
+    /// Switching the phone between charging and file transfer re-enumerates the
+    /// USB configuration, so this set changes live and drives the empty state.
     private static func interfaces(of device: io_service_t) -> [USBInterface] {
         var iterator: io_iterator_t = 0
         guard IORegistryEntryGetChildIterator(device, kIOServicePlane, &iterator) == KERN_SUCCESS else { return [] }

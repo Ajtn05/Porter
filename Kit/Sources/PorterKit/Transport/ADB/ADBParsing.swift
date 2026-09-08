@@ -1,10 +1,10 @@
 import Foundation
 
-/// Pure parsers for the text `adb` and Android's toybox emit.
+/// Parsers for the output `adb` and Android's toybox emit.
 ///
-/// These are separated from the transport so they can be tested against captured
-/// device output without a phone attached, which matters because the formats
-/// differ subtly between Android versions and vendor ROMs.
+/// Kept separate from the transport so they can be tested against captured
+/// device output with no phone attached. The formats differ subtly between
+/// Android versions and vendor ROMs, so the captured cases matter.
 public enum ADBParsing {
 
     // MARK: - adb devices -l
@@ -33,8 +33,8 @@ public enum ADBParsing {
         }
     }
 
-    /// Parses `adb devices -l`. Ignores the header and any daemon chatter that
-    /// adb prints when it has to start its server.
+    /// Parses `adb devices -l`, ignoring the header and the messages adb prints
+    /// when it starts its server.
     public static func parseDeviceList(_ output: String) -> [DeviceListing] {
         var results: [DeviceListing] = []
         for rawLine in output.split(separator: "\n", omittingEmptySubsequences: true) {
@@ -64,10 +64,10 @@ public enum ADBParsing {
     /// Parses the output of
     /// `find DIR -maxdepth 1 -mindepth 1 -exec stat -c '%f|%s|%Y|%n' {} +`.
     ///
-    /// Filenames may legally contain newlines on Android, which would otherwise
-    /// split one entry across two lines. A line that does not begin with the
-    /// `hex|digits|digits|` prefix is therefore treated as a continuation of the
-    /// previous filename rather than as a new record.
+    /// Filenames on Android may legally contain newlines, which would split one
+    /// entry across two lines. A line not starting with the
+    /// `hex|digits|digits|` prefix is therefore treated as a continuation of
+    /// the previous filename rather than as a new record.
     public static func parseStatRecords(_ output: String) -> [RemoteFile] {
         var results: [RemoteFile] = []
         var pending: (mode: UInt32, size: Int64, mtime: Int64, name: String)?
@@ -86,10 +86,9 @@ public enum ADBParsing {
             ))
         }
 
-        // The tool terminates its output with a newline. Splitting without
-        // dropping it would leave a trailing empty component, which the
-        // continuation rule below would then glue onto the LAST filename as a
-        // stray "\n" - producing a path that exists nowhere. Strip exactly one.
+        // Strip exactly one trailing newline. Left in place, it splits into an
+        // empty final component, which the continuation rule below would append
+        // to the last filename as a stray "\n".
         var text = output
         if text.hasSuffix("\n") { text.removeLast() }
 
@@ -137,12 +136,12 @@ public enum ADBParsing {
         return formatter
     }()
 
-    /// Fallback parser for toybox `ls -la`, used on ROMs where `stat` is absent.
+    /// Fallback parser for toybox `ls -la`, used on ROMs without `stat`.
     ///
     /// Format: `mode links owner group size YYYY-MM-DD HH:MM name`. The name is
-    /// everything after the time field, so spaces in names survive. Minute
-    /// granularity is why this is the fallback and not the primary: it is not
-    /// good enough to preserve mtimes with.
+    /// everything after the time field, so spaces in names survive. Timestamps
+    /// are only minute-granular, which is why this is not the primary parser:
+    /// they are too coarse to preserve mtimes.
     public static func parseListing(_ output: String, in directory: RemotePath) -> [RemoteFile] {
         var results: [RemoteFile] = []
         for rawLine in output.split(separator: "\n") {
@@ -204,18 +203,18 @@ public enum ADBParsing {
         public var mountPoint: String
     }
 
-    /// Parses `df -k PATH`. Takes the last data row, because toybox wraps long
-    /// device names onto a second line and the numbers land on the wrap.
+    /// Parses `df -k PATH`, taking the last data row: toybox wraps long device
+    /// names onto a second line, leaving the numbers on the wrap.
     public static func parseDiskFree(_ output: String) -> DiskFree? {
         let lines = output.split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty && !$0.hasPrefix("Filesystem") }
         guard let line = lines.last else { return nil }
 
         let fields = line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
-        // Expected: Filesystem 1K-blocks Used Available Use% Mounted-on.
-        // When toybox wraps a long device name, the numbers land alone on the
-        // next line and the filesystem column is absent, leaving five fields.
-        // Indices are therefore counted from the end, which is stable either way.
+        // Expected: Filesystem 1K-blocks Used Available Use% Mounted-on. A
+        // wrapped device name leaves the numbers alone on the next line with no
+        // filesystem column, so count indices from the end, which holds either
+        // way.
         guard fields.count >= 5,
               let blocks = Int64(fields[fields.count - 5]),
               let available = Int64(fields[fields.count - 3]) else { return nil }
@@ -226,12 +225,11 @@ public enum ADBParsing {
         )
     }
 
-    /// Maps `stat -f -c %T` output onto the filesystems we care about, because
-    /// FAT32's 4 GiB ceiling has to be enforced before a copy starts.
+    /// Maps `stat -f -c %T` output onto a known filesystem.
     ///
-    /// GNU coreutils prints a name here. Android's toybox prints the raw
-    /// superblock magic in hex instead - a real Galaxy S22 running Android 16
-    /// answers `0x65735546`, not `fuse` - so both forms are accepted.
+    /// GNU coreutils prints a name here, while Android's toybox prints the raw
+    /// superblock magic in hex: a Galaxy S22 on Android 16 answers
+    /// `0x65735546`, not `fuse`. Both forms are accepted.
     public static func filesystem(fromStatType type: String) -> StorageVolume.Filesystem {
         let trimmed = type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 
@@ -262,13 +260,12 @@ public enum ADBParsing {
         }
     }
 
-    /// Reads the filesystem type for a mount point out of `mount` output.
+    /// Reads the filesystem backing a mount point out of `mount` output.
     ///
-    /// Needed because Android presents user storage through a FUSE layer, so
-    /// asking the filesystem directly tells you "fuse" and not what is
-    /// underneath. For the one question that actually matters - whether a file
-    /// over 4 GiB will fit - the backing filesystem is the honest answer, and
-    /// only `mount` knows it.
+    /// Android presents user storage through a FUSE layer, so querying the
+    /// filesystem directly reports "fuse" rather than what lies underneath.
+    /// Only `mount` names the backing filesystem, which is what determines
+    /// whether a file over 4 GiB will fit.
     public static func backingFilesystem(fromMountOutput output: String, forPath path: String) -> StorageVolume.Filesystem {
         var best: (length: Int, filesystem: StorageVolume.Filesystem)?
 
@@ -284,7 +281,7 @@ public enum ADBParsing {
             let parsed = filesystem(fromStatType: fields[typeIndex + 1])
             guard parsed != .unknown, parsed != .fuse else { continue }
             guard path == mountPoint || path.hasPrefix(mountPoint + "/") else { continue }
-            // The longest matching mount point wins, the way the kernel resolves it.
+            // Longest matching mount point wins, as the kernel resolves it.
             if best == nil || mountPoint.count > best!.length {
                 best = (mountPoint.count, parsed)
             }
@@ -294,7 +291,7 @@ public enum ADBParsing {
 
     // MARK: - getprop
 
-    /// Parses the `[key]: [value]` form that `getprop` prints with no arguments.
+    /// Parses the `[key]: [value]` form `getprop` prints with no arguments.
     public static func parseProperties(_ output: String) -> [String: String] {
         var properties: [String: String] = [:]
         for line in output.split(separator: "\n") {

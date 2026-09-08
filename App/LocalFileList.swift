@@ -12,8 +12,8 @@ struct LocalFile: Identifiable, Hashable, Sendable {
     var name: String { url.lastPathComponent }
     var isHidden: Bool { name.hasPrefix(".") }
 
-    /// Sidecars for interrupted transfers are ours, not the user's, and showing
-    /// them as ordinary files would invite someone to open a half-copied movie.
+    /// True for the sidecar an interrupted transfer leaves behind. Those are
+    /// filtered out of the pane so a partial copy never looks like a real file.
     var isPartialTransfer: Bool { name.hasSuffix(TransferItem.partialSuffix) }
 
     static func contents(of directory: URL, includeHidden: Bool) -> [LocalFile] {
@@ -42,8 +42,8 @@ struct LocalFile: Identifiable, Hashable, Sendable {
     }
 }
 
-/// How a pane is sorted. Kept in the model so both panes stay in step and the
-/// choice survives navigating into a folder.
+/// Sort field for both panes. Held in the model so the panes stay in step and
+/// the choice survives navigating into a folder.
 enum SortField: String, CaseIterable, Identifiable {
     case name, size, modified
     var id: String { rawValue }

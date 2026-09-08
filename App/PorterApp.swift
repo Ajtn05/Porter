@@ -16,7 +16,7 @@ struct PorterApp: App {
         .windowToolbarStyle(.unified)
         .commands { PorterCommands(model: model) }
 
-        // Progress without keeping the window open.
+        // Reports transfer progress while the main window is closed.
         MenuBarExtra {
             MenuBarContent()
                 .environment(model)
@@ -32,7 +32,7 @@ struct PorterApp: App {
     }
 }
 
-/// Finder's shortcuts, because this is a file browser and muscle memory is real.
+/// Menu commands, keyed to match Finder's shortcuts.
 struct PorterCommands: Commands {
     let model: AppModel
 
@@ -79,7 +79,7 @@ struct MenuBarLabel: View {
 
     var body: some View {
         if summary.isRunning {
-            // A number beats a spinner: it tells you whether to wait.
+            // A percentage, rather than an indeterminate spinner.
             Label("\(Int(summary.fractionComplete * 100))%", systemImage: "arrow.up.arrow.down.circle.fill")
                 .labelStyle(.titleAndIcon)
         } else {

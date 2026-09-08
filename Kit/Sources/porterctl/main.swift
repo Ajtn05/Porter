@@ -3,11 +3,11 @@ import Foundation
 
 /// A read-only diagnostic tool for the transport layer.
 ///
-/// Exists because the interesting failures — a ROM whose `stat` output differs,
-/// a resume that lands on the wrong offset — are invisible from the UI. This
-/// runs the same code the app runs and prints what it saw.
+/// Runs the same code paths as the app and prints what they return, so failures
+/// that are invisible from the UI - a ROM whose `stat` output differs, a resume
+/// landing on the wrong offset - can be inspected directly.
 ///
-/// Nothing here writes to the device.
+/// No command here writes to the device.
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data(("porterctl: " + message + "\n").utf8))
@@ -116,8 +116,8 @@ case "pull":
     await queue.flush()
 
 case "resume-test":
-    // Proves the acceptance criterion that matters most, against real hardware:
-    // interrupt a large copy partway, then continue it rather than restarting.
+    // Interrupts a large copy partway against real hardware, then checks that
+    // it continues rather than restarting.
     guard arguments.count > 2 else { fail("usage: porterctl resume-test <remote-path> <local-path>") }
     let (transport, device) = try await resolveTransport()
     let remote = RemotePath(arguments[1])
@@ -178,8 +178,8 @@ case "resume-test":
     await queue.flush()
 
 case "pull-tree":
-    // Exercises the whole pipeline the app uses: plan a folder, queue it, copy
-    // it, verify every file. `maxBytes` keeps a test run bounded.
+    // Exercises the full pipeline: plan a folder, queue it, copy it, and verify
+    // every file. `maxBytes` bounds the run.
     guard arguments.count > 2 else { fail("usage: porterctl pull-tree <remote-dir> <local-dir> [maxBytes]") }
     let (transport, device) = try await resolveTransport()
     let remoteRoot = RemotePath(arguments[1])

@@ -1,13 +1,14 @@
 import Foundation
 
-/// Asked, once per collision, what to do. Implemented by the UI; the planner
-/// handles "apply to all" so every call site does not have to.
+/// Consulted once per naming collision. Implemented by the UI; the planner
+/// applies the "apply to all" flag so call sites do not have to.
 public protocol ConflictResolving: Sendable {
     func resolve(_ context: ConflictContext) async -> ConflictDecision
 }
 
-/// Always answers the same way. Used by tests, by the File Provider extension
-/// (which has no UI to ask with), and by watched-folder sync.
+/// Returns the same resolution for every collision. Used by tests, by the File
+/// Provider extension, which has no UI to prompt with, and by watched-folder
+/// sync.
 public struct FixedConflictResolver: ConflictResolving {
     public let decision: ConflictDecision
     public init(_ resolution: ConflictResolution) {
@@ -64,16 +65,16 @@ public struct TransferPlan: Sendable {
     }
 }
 
-/// Turns a drag-and-drop into a checked, ordered list of files to move.
+/// Expands a set of dragged sources into a checked, ordered list of items.
 ///
-/// Everything that can go wrong before a single byte moves is decided here: not
-/// enough room, a file too big for the card's filesystem, a name that is legal
-/// on one side and not the other, a collision the user has to rule on. Finding
-/// these up front is what stops a 20 GB copy from dying at 90%.
+/// Every condition that can be detected before bytes move is resolved here:
+/// insufficient space, a file too large for the destination filesystem, a name
+/// that is legal on one side but not the other, and collisions needing a
+/// resolution. This is what keeps a large copy from failing partway through.
 public struct TransferPlanner: Sendable {
-    // FileManager is not marked Sendable, but the read-only enumeration and
-    // attribute lookups used here are documented as thread-safe on the shared
-    // instance, and the planner never mutates it.
+    // FileManager is not Sendable, but the read-only enumeration and attribute
+    // lookups used here are documented as thread-safe on the shared instance,
+    // and the planner never mutates it.
     nonisolated(unsafe) private let fileManager: FileManager
 
     public init(fileManager: FileManager = .default) {
@@ -150,7 +151,7 @@ public struct TransferPlanner: Sendable {
             }
         }
 
-        // Enough room on the Mac?
+        // Check the destination has room.
         let needed = plan.totalBytes
         if let available = localFreeSpace(at: destination), needed > available {
             plan.warnings.append(.insufficientSpace(
@@ -191,8 +192,9 @@ public struct TransferPlanner: Sendable {
                 for component in safeComponents { remotePath = remotePath.appending(component) }
 
                 if !local.isDirectory, let limit = sizeLimit, local.size > limit {
-                    // FAT32 physically cannot hold this. Blocking, not a warning
-                    // to click past: the copy would fail partway regardless.
+                    // The filesystem cannot hold a file this large, so this
+                    // blocks the batch rather than warning: the copy would
+                    // fail partway through regardless.
                     plan.warnings.append(.fileTooLargeForFilesystem(
                         name: local.url.lastPathComponent, size: local.size,
                         limit: limit, filesystem: volume?.filesystem.displayName ?? "this volume"
@@ -252,9 +254,9 @@ public struct TransferPlanner: Sendable {
                         volume: volume.displayName, wasVerified: report.verifiedFreeBytes != nil
                     ))
                 } else if !report.isTrustworthy, needed > available / 2 {
-                    // MTP devices routinely report stale free space. When the
-                    // copy is large relative to what they claim, say so rather
-                    // than discovering it at 90%.
+                    // Free space here cannot be trusted, as on MTP devices,
+                    // which report stale figures. Warn while the copy is still
+                    // large relative to what the device claims.
                     plan.warnings.append(.freeSpaceUnverifiable(
                         volume: volume.displayName, reported: report.reportedFreeBytes
                     ))
@@ -279,8 +281,8 @@ public struct TransferPlanner: Sendable {
         return decision.resolution
     }
 
-    /// Directories before the files inside them, so a placeholder never races
-    /// the first file that needs it to exist.
+    /// Sorts directory placeholders ahead of the files inside them, so a file
+    /// never races the creation of its parent.
     private func orderedDirectoriesFirst(_ plan: TransferPlan) -> TransferPlan {
         var plan = plan
         plan.items.sort { lhs, rhs in

@@ -12,8 +12,8 @@ struct RemoteBreadcrumbBar: View {
     }
 
     private var crumbs: [Crumb<RemotePath>] {
-        // Show the path relative to the storage volume. Nobody needs to see
-        // /storage/emulated/0 in front of every folder they open.
+        // Show the path relative to the storage volume, so the volume's mount
+        // point does not prefix every crumb.
         guard let relative = path.relative(to: root) else {
             return [Crumb(label: rootLabel, path: root)]
         }
@@ -86,7 +86,7 @@ struct BreadcrumbStrip<Path: Hashable>: View {
             .padding(.vertical, 5)
         }
         .scrollIndicators(.never)
-        // The strip scrolls; the window must not grow to fit a deep path.
+        // The strip scrolls, so a deep path must not widen the window.
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.background.secondary)
         Divider()

@@ -2,9 +2,8 @@ import Foundation
 
 /// A POSIX-style absolute path on a connected device.
 ///
-/// Device paths are always `/`-separated and are *not* the same namespace as
-/// macOS file URLs, so they get their own type. Mixing the two up is how you end
-/// up writing `/storage/emulated/0` into someone's home directory.
+/// Device paths are always `/`-separated and occupy a different namespace from
+/// macOS file URLs, so they use a distinct type to keep the two from mixing.
 public struct RemotePath: Hashable, Sendable, Codable, CustomStringConvertible {
     public private(set) var components: [String]
 
@@ -38,7 +37,7 @@ public struct RemotePath: Hashable, Sendable, Codable, CustomStringConvertible {
         RemotePath(components: components + path.components)
     }
 
-    /// Every ancestor from the root down to and including `self`, for breadcrumbs.
+    /// Every ancestor from the root down to and including `self`.
     public var breadcrumbs: [RemotePath] {
         var result: [RemotePath] = [.root]
         var acc: [String] = []
@@ -63,8 +62,8 @@ public struct RemotePath: Hashable, Sendable, Codable, CustomStringConvertible {
 
     /// Single-quoted for safe interpolation into an `adb shell` command line.
     ///
-    /// Android's shell is POSIX-ish; single quotes suppress every expansion, and
-    /// an embedded quote is closed, escaped, and reopened.
+    /// Single quotes suppress every expansion in Android's shell; an embedded
+    /// quote is closed, escaped, and reopened.
     public var shellQuoted: String {
         "'" + string.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }

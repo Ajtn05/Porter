@@ -3,11 +3,10 @@ import Foundation
 
 /// An in-memory Android device.
 ///
-/// Exists so the engine's guarantees — resume, verification, never leaving a
-/// partial file under its final name — can be tested deterministically,
-/// including the failures that are impossible to stage reliably with real
-/// hardware: a cable pulled at exactly 50%, a device that corrupts a byte, a
-/// ROM with no `sha256sum`.
+/// Lets the engine's guarantees - resume, verification, and never leaving a
+/// partial file under its final name - be tested deterministically, including
+/// failures that cannot be staged reliably on real hardware: a cable pulled at
+/// exactly 50%, a device that corrupts a byte, a ROM with no `sha256sum`.
 actor FakeTransport: DeviceTransport {
     nonisolated let kind: TransportKind
     private var configuredCapabilities: TransportCapabilities
@@ -30,11 +29,11 @@ actor FakeTransport: DeviceTransport {
     var directories: Set<String> = ["/"]
     var modificationDates: [String: Date] = [:]
 
-    /// When set, a read throws after this many bytes — a cable pull.
+    /// When set, a read throws after this many bytes, simulating a cable pull.
     var failReadAfterBytes: Int64?
-    /// When set, the checksum this device reports is wrong — a corrupt copy.
+    /// When set, the device reports a wrong checksum, simulating a corrupt copy.
     var corruptChecksum = false
-    /// When false, the device has no `sha256sum`, like some minimal ROMs.
+    /// When false, the device has no `sha256sum`, as on some minimal ROMs.
     var hasChecksumTool = true
     var truncateSupported = true
     var chunkSize = 64 * 1024
@@ -42,10 +41,10 @@ actor FakeTransport: DeviceTransport {
     private(set) var readCallCount = 0
     private(set) var lastReadOffset: Int64 = 0
 
-    /// Stands in for `adb pull`: a bulk path that is faster than streaming.
+    /// Stands in for `adb pull`: a bulk path faster than streaming.
     var supportsFastPull = false
     private(set) var fastPullCallCount = 0
-    /// Makes the bulk path slow enough that a pause can land in the middle of it.
+    /// Slows the bulk path so a pause can land in the middle of it.
     var fastPullDelay: Duration = .zero
 
     init(kind: TransportKind = .adb, capabilities: TransportCapabilities? = nil) {
@@ -191,8 +190,8 @@ actor FakeTransport: DeviceTransport {
         guard let data = files[path.string] else { throw TransferError.notFound(path) }
         fastPullCallCount += 1
 
-        // Written in pieces so cancellation can land partway, the way a real
-        // bulk copy behaves.
+        // Written in pieces so cancellation can land partway, as it would
+        // during a real bulk copy.
         FileManager.default.createFile(atPath: localURL.path, contents: nil)
         let handle = try FileHandle(forWritingTo: localURL)
         defer { try? handle.close() }

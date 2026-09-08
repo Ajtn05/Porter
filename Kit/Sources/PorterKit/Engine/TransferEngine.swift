@@ -2,9 +2,8 @@ import Foundation
 
 /// Resolves a device ID to a live transport, reconnecting if necessary.
 ///
-/// Injected rather than owned so the engine does not care whether the bytes are
-/// about to travel over a cable or the LAN — and so a transfer can change its
-/// mind mid-flight when the cable is pulled.
+/// Injected rather than owned, so the engine is independent of which transport
+/// is in use and can pick up a replacement mid-transfer.
 public protocol TransportResolver: Sendable {
     func transport(for deviceID: DeviceID) async throws -> any DeviceTransport
 }
@@ -12,21 +11,21 @@ public protocol TransportResolver: Sendable {
 public enum TransferEvent: Sendable {
     case itemChanged(TransferItem)
     case summaryChanged(TransferSummary)
-    /// A file's name had to change to be legal at the destination.
+    /// A file's name was changed to be legal at the destination.
     case sanitized(item: UUID, change: FilenameSanitizer.Change)
     case batchFinished(UUID)
 }
 
-/// Moves bytes, and refuses to lie about it.
+/// Executes queued transfers.
 ///
 /// Three guarantees hold for every item:
-///  1. In-flight bytes live in a `.porterpart` sidecar. The final name only ever
-///     appears once the file is whole, so an interrupted copy can never be
+///  1. In-flight bytes live in a `.porterpart` sidecar, so the final name
+///     appears only once the file is whole and an interrupted copy is never
 ///     mistaken for a finished one.
-///  2. Every completed file is verified. The device hashes its own copy, we hash
-///     ours, and a mismatch discards the result instead of keeping it.
-///  3. Interruptions resume. The partial file's length is the resume point, so
-///     reconnecting continues rather than restarting.
+///  2. Every completed file is verified by comparing a device-side hash with a
+///     local one; a mismatch discards the result rather than keeping it.
+///  3. Interruptions resume from the partial file's length rather than
+///     restarting.
 public actor TransferEngine {
     public let queue: TransferQueue
     private let resolver: any TransportResolver
@@ -36,22 +35,20 @@ public actor TransferEngine {
     private var isPaused = false
     private var meter = ThroughputMeter()
     private var pumpTask: Task<Void, Never>?
-    /// How many streams each device will tolerate, learned when its transport is
-    /// first resolved. MTP is strictly serial, and running two streams over it
-    /// is slower than running one - so the user's concurrency preference is a
-    /// ceiling, never a floor.
+    /// Per-device stream limits, read from each transport when it is first
+    /// resolved. MTP is strictly serial, so `maximumConcurrency` acts as a
+    /// ceiling and this as the binding constraint.
     private var transportLimits: [DeviceID: Int] = [:]
     private var runningDevices: [DeviceID: Int] = [:]
 
     private var continuations: [UUID: AsyncStream<TransferEvent>.Continuation] = [:]
 
-    /// How many files move at once. Small files benefit from parallelism; large
-    /// sequential ones do not, and MTP actively degrades. Clamped by the
-    /// transport's own limit at dispatch time.
+    /// How many files move at once. Small files benefit from parallelism, large
+    /// sequential ones do not, and MTP degrades. Clamped by the transport's own
+    /// limit at dispatch time.
     public var maximumConcurrency: Int
 
-    /// Verify with checksums after copying. On by default; the acceptance bar is
-    /// 20 GB with zero corrupted files, and you cannot claim that without checking.
+    /// Whether to verify each file with a checksum after copying. On by default.
     public var verifiesChecksums: Bool
 
     public init(queue: TransferQueue, resolver: any TransportResolver,
@@ -154,13 +151,12 @@ public actor TransferEngine {
         await emitSummary()
     }
 
-    /// Cancels an item's task and waits for it to actually unwind.
+    /// Cancels an item's task and waits for it to unwind.
     ///
-    /// Waiting matters. Cancellation is cooperative, so the task keeps running
-    /// until it reaches its next check - and without this the item could be
-    /// dispatched again while the previous attempt was still alive, leaving two
-    /// executions writing the same partial file and sharing one entry in
-    /// `tasks`, so the new one inherited the old one's cancelled handle.
+    /// The wait is required. Cancellation is cooperative, so without it the item
+    /// could be dispatched again while the previous attempt was still running,
+    /// leaving two executions writing the same partial file and sharing one
+    /// entry in `tasks`, where the new one would inherit the cancelled handle.
     private func stopTask(_ id: UUID) async {
         guard let task = tasks[id] else {
             running.remove(id)
@@ -226,8 +222,7 @@ public actor TransferEngine {
         }
     }
 
-    /// Whether another stream to this device would exceed what its transport
-    /// says it can handle.
+    /// Whether another stream to this device would exceed its transport's limit.
     private func hasCapacity(forDevice deviceID: DeviceID) -> Bool {
         guard let limit = transportLimits[deviceID] else { return true }
         return (runningDevices[deviceID] ?? 0) < limit
@@ -279,7 +274,7 @@ public actor TransferEngine {
                 emit(.itemChanged(updated))
             }
         } catch is CancellationError {
-            // Pause and cancel already set the right state; leave partials in
+            // Pause and cancel have already set the state. Leave partials in
             // place so the item can resume.
         } catch {
             await handleFailure(id, error: error)
@@ -291,8 +286,8 @@ public actor TransferEngine {
         let transferError = error as? TransferError
         let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
 
-        // A yanked cable is not a failure the user has to act on; it is a pause
-        // that resumes when the device comes back.
+        // A transient failure, such as a disconnected cable, becomes a pause
+        // that resumes when the device returns.
         let becomesPaused = transferError?.isTransient ?? false
 
         if let updated = await queue.update(id, { item in
@@ -300,8 +295,8 @@ public actor TransferEngine {
             item.errorMessage = message
             if !becomesPaused { item.finishedAt = Date() }
         }) {
-            // A checksum mismatch means the bytes on disk are wrong. Keeping
-            // them would let a later resume "continue" from corrupt data.
+            // The written bytes are wrong; keeping them would let a later
+            // resume continue from corrupt data.
             if case .checksumMismatch = transferError {
                 await discardPartial(for: updated)
                 await queue.update(id) { $0.bytesTransferred = 0 }
@@ -326,8 +321,8 @@ public actor TransferEngine {
         try fileManager.createDirectory(at: item.localURL.deletingLastPathComponent(),
                                         withIntermediateDirectories: true)
 
-        // Resume point: whatever is already in the sidecar, rounded down to a
-        // block boundary so the ranged read stays aligned.
+        // Resume from whatever the sidecar already holds, rounded down to a
+        // block boundary to keep the ranged read aligned.
         var resumeOffset = existingSize(at: partialURL)
         if resumeOffset > 0 {
             if !transport.capabilities.supportsRangedReads || resumeOffset >= item.totalBytes {
@@ -340,10 +335,9 @@ public actor TransferEngine {
         }
         if resumeOffset == 0 {
             try? fileManager.removeItem(at: partialURL)
-            // A fresh copy takes the transport's bulk path when it has one; it
-            // is markedly faster, and the sidecar plus checksum guarantees are
-            // unaffected because it writes to the same place and is verified
-            // the same way.
+            // A fresh copy uses the transport's bulk path where one exists.
+            // It writes to the same sidecar and is verified the same way, so
+            // the guarantees above still hold.
             if try await fastPull(item, to: partialURL, using: transport) {
                 try await finishPull(item, partialURL: partialURL, transport: transport)
                 return
@@ -369,8 +363,8 @@ public actor TransferEngine {
             meter.record(bytes: Int64(chunk.count))
             await queue.recordProgress(item.id, bytesTransferred: written)
 
-            // Checkpoint roughly every 16 MB: often enough that a crash costs
-            // little, rare enough that it is not the bottleneck.
+            // Checkpoint roughly every 16 MB: frequent enough to bound what a
+            // crash costs, rare enough not to dominate the transfer.
             if sinceCheckpoint >= 16 * 1024 * 1024 {
                 sinceCheckpoint = 0
                 try handle.synchronize()
@@ -399,10 +393,10 @@ public actor TransferEngine {
         }
     }
 
-    /// Everything a finished download still has to pass before it earns its name.
+    /// Validates a finished download, then moves it to its final name.
     private func finishPull(_ item: TransferItem, partialURL: URL,
                             transport: any DeviceTransport) async throws {
-        // Size check first: it is free, and it catches the common truncation.
+        // Size check first: it is free and catches the common truncation.
         let finalSize = existingSize(at: partialURL)
         if item.totalBytes > 0 && finalSize != item.totalBytes {
             throw TransferError.truncated(path: item.displayPath, expected: item.totalBytes, actual: finalSize)
@@ -424,8 +418,8 @@ public actor TransferEngine {
     private func verifyPull(_ item: TransferItem, partialURL: URL, transport: any DeviceTransport) async throws {
         guard transport.capabilities.supportsDeviceSideChecksum,
               let deviceChecksum = try await transport.checksum(item.remotePath, algorithm: .sha256) else {
-            // No hash available on this device. The size check above is the only
-            // guarantee we can honestly offer, and we do not pretend otherwise.
+            // No device-side hash available, so the size check above is the
+            // only validation. The item is left marked unverified.
             return
         }
         let localChecksum = try ChecksumService.hashLocalFile(at: partialURL, algorithm: deviceChecksum.algorithm)
@@ -450,9 +444,9 @@ public actor TransferEngine {
            let existing = try? await transport.stat(partialPath), existing.size > 0 {
             let aligned = TransferChunk.alignedDown(existing.size)
             if aligned > 0 && aligned < item.totalBytes {
-                // The tail of the sidecar may be a half-written block. Trim back
-                // to the boundary; if the device cannot trim, start over rather
-                // than append onto a partial block and corrupt the file.
+                // The sidecar may end in a half-written block. Trim back to
+                // the boundary; if the device cannot trim, restart rather than
+                // append onto a partial block and corrupt the file.
                 if existing.size != aligned {
                     do {
                         try await transport.truncate(partialPath, to: aligned)
@@ -498,7 +492,7 @@ public actor TransferEngine {
             try await verifyPush(item, partialPath: partialPath, transport: transport)
         }
 
-        // Only now does the file take its real name.
+        // Verified, so the file can now take its real name.
         if (try? await transport.stat(item.remotePath)) != nil {
             try await transport.remove(item.remotePath, recursive: false)
         }
@@ -540,7 +534,7 @@ public actor TransferEngine {
         return size.int64Value
     }
 
-    /// Progress callbacks arrive off-actor; this is the hop back on.
+    /// Hops back onto the actor from an off-actor progress callback.
     private func recordThroughput(_ delta: Int64) {
         meter.record(bytes: delta)
     }
@@ -553,7 +547,7 @@ public actor TransferEngine {
 
 
 
-    /// Moves a finished download into place, honouring the conflict choice.
+    /// Moves a finished download into place, applying the conflict resolution.
     private func placeLocalFile(from partialURL: URL, to destination: URL, resolution: ConflictResolution?) throws {
         var finalURL = destination
         if fileManager.fileExists(atPath: destination.path) {
@@ -574,8 +568,8 @@ public actor TransferEngine {
     }
 }
 
-/// Progress callbacks arrive from a process-reading thread, so the running total
-/// needs a lock rather than actor isolation.
+/// Running byte total for a transfer. Progress callbacks arrive on a
+/// process-reading thread, so this uses a lock rather than actor isolation.
 private final class ProgressCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var value: Int64

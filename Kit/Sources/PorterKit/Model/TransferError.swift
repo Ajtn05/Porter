@@ -1,9 +1,9 @@
 import Foundation
 
-/// Errors the UI is expected to *explain*, not just display.
+/// Errors surfaced to the user.
 ///
-/// Every case carries enough context for the presenter to write a sentence that
-/// tells the user which physical thing to go and change.
+/// Each case carries enough context for the presenter to name the specific
+/// blocker and, where one exists, the step that clears it.
 public enum TransferError: Error, Hashable, Sendable {
     case deviceNotFound(DeviceID)
     case deviceNotReady(DeviceID, DeviceReadiness)
@@ -82,8 +82,8 @@ extension TransferError: LocalizedError {
         }
     }
 
-    /// A concrete next step, shown under the error. Nil when there is nothing
-    /// useful to say beyond the message itself.
+    /// A concrete next step, shown beneath the message. Nil when the message
+    /// itself is all there is to say.
     public var recoverySuggestion: String? {
         switch self {
         case .deviceNotReady(_, .chargingOnly):
@@ -105,8 +105,7 @@ extension TransferError: LocalizedError {
         }
     }
 
-    /// Whether retrying the same operation could plausibly work without the user
-    /// changing something.
+    /// Whether retrying the same operation could succeed without user action.
     public var isTransient: Bool {
         switch self {
         case .deviceDisconnected, .deviceStalled, .deviceNotFound:

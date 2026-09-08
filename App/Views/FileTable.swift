@@ -59,9 +59,9 @@ struct FileTable: View {
     let onDelete: () -> Void
     let onCopyAcross: () -> Void
     let copyAcrossTitle: String
-    /// Supplied by the Mac pane: a real file URL, so rows drag to Finder too.
+    /// Supplied by the Mac pane. Vends a file URL, so rows also drag to Finder.
     var dragProvider: ((String) -> URL?)?
-    /// Supplied by the device pane: a path list the Mac pane knows how to fetch.
+    /// Supplied by the device pane. Vends the path list the Mac pane fetches.
     var remoteDragProvider: ((Set<String>) -> RemoteFileDrag?)?
 
     @State private var previewURL: URL?
@@ -75,7 +75,8 @@ struct FileTable: View {
         }
         .quickLookPreview($previewURL)
         .background {
-            // Hidden shortcut hosts: Finder's keys work without a menu open.
+            // Hidden buttons that host the shortcuts, so Finder's keys work
+            // without an open menu.
             VStack {
                 Button("Delete") { onDelete() }
                     .keyboardShortcut(.delete, modifiers: .command)
@@ -158,17 +159,16 @@ struct FileTable: View {
         }
     }
 
-    /// Quick Look works directly for anything already on the Mac. Device files
-    /// have no local URL to preview, so the device pane leaves `dragProvider`
-    /// nil and the key press does nothing rather than opening an empty window.
+    /// Previews the selected row. Device files have no local URL, so the device
+    /// pane leaves `dragProvider` nil and this is a no-op there.
     private func preview() {
         guard let id = selection.first, let url = dragProvider?(id) else { return }
         previewURL = url
     }
 }
 
-/// Drag support differs per pane, so it is a modifier rather than a branch
-/// inside the row view.
+/// Applies the pane's drag behaviour. A modifier rather than a branch inside
+/// the row view, because the two panes drag different payload types.
 private struct RowDragModifier: ViewModifier {
     let row: FileRow
     let selection: Set<String>

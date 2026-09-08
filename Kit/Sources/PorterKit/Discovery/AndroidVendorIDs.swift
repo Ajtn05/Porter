@@ -1,12 +1,11 @@
 import Foundation
 
-/// USB vendor IDs that ship Android handsets, as published in the Android OEM
-/// USB driver list.
+/// USB vendor IDs that ship Android handsets, from the Android OEM USB driver
+/// list.
 ///
-/// This exists for one reason: to recognise a phone that is plugged in but
-/// exposing no storage interface at all. Without a vendor list, a charge-only
-/// phone is indistinguishable from a USB fan, and we would have nothing to say
-/// to the user beyond an empty window.
+/// Used to recognise a phone that is plugged in but exposing no storage
+/// interface. Without the vendor ID, such a device is indistinguishable from
+/// any other non-storage peripheral on the bus.
 public enum AndroidVendorIDs {
     public static let table: [Int: String] = [
         0x0502: "Acer", 0x0B05: "ASUS", 0x0489: "Foxconn", 0x04C5: "Fujitsu",

@@ -1,8 +1,10 @@
 import Foundation
 
-/// Async wrapper around `Process` with three things Foundation does not give us:
-/// streaming stdout without buffering the whole output, cooperative
-/// cancellation, and a timeout that actually kills the child.
+/// The buffered result of a finished process.
+///
+/// `ProcessRunner` wraps `Process` to add three things Foundation does not
+/// provide: stdout streaming without buffering the whole output, cooperative
+/// cancellation, and a timeout that terminates the child.
 public struct ProcessResult: Sendable {
     public let exitCode: Int32
     public let standardOutput: Data
@@ -15,7 +17,7 @@ public struct ProcessResult: Sendable {
 
 public enum ProcessRunner {
     /// Runs to completion and buffers the output. For commands whose output is
-    /// small and bounded: `adb devices`, `stat`, `df`.
+    /// small and bounded, such as `adb devices`, `stat`, and `df`.
     public static func run(
         executable: URL,
         arguments: [String],
@@ -38,8 +40,8 @@ public enum ProcessRunner {
 
         let collector = OutputCollector()
 
-        // Read both pipes concurrently. Draining only one deadlocks as soon as
-        // the child fills the other pipe's 64 KB buffer — which `adb pull` does.
+        // Read both pipes concurrently. Draining only one deadlocks once the
+        // child fills the other pipe's 64 KB buffer, as `adb pull` does.
         outPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             if data.isEmpty {
@@ -92,11 +94,12 @@ public enum ProcessRunner {
         )
     }
 
-    /// Streams stdout as it arrives. For `adb exec-out`, where the output is the
-    /// file itself and may be gigabytes.
+    /// Streams stdout as it arrives. For commands like `adb exec-out`, whose
+    /// output is the file itself and may be gigabytes.
     ///
-    /// The stream finishes when the child exits; a non-zero exit finishes it with
-    /// `TransferError.commandFailed` so a half-read file can never look complete.
+    /// The stream finishes when the child exits. A non-zero exit finishes it
+    /// with `TransferError.commandFailed`, so a half-read file cannot be
+    /// mistaken for a complete one.
     public static func stream(
         executable: URL,
         arguments: [String],

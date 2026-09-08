@@ -2,18 +2,19 @@ import Foundation
 
 public struct StorageVolume: Identifiable, Hashable, Sendable, Codable {
     public var id: String
-    /// The name the device gave us. Not unique: two SD cards can both be "SD card".
+    /// The name reported by the device. Not unique: two cards can both be
+    /// "SD card".
     public var rawName: String
     public var rootPath: RemotePath
     public var totalBytes: Int64?
     public var freeBytes: Int64?
     public var isRemovable: Bool
-    /// The underlying filesystem, when we can determine it. FAT32 means a hard
-    /// 4 GiB per-file ceiling that we must check before starting a copy.
+    /// The underlying filesystem, when it can be determined. FAT32 carries a
+    /// hard 4 GiB per-file ceiling, checked before a copy starts.
     public var filesystem: Filesystem
-    /// MTP devices routinely report free space that is stale, rounded, or simply
-    /// wrong. When this is false the engine probes before a large write instead
-    /// of trusting `freeBytes`.
+    /// False when `freeBytes` cannot be relied on, as on MTP devices, which
+    /// routinely report stale or rounded values. The engine then probes before
+    /// a large write instead of trusting the reported figure.
     public var freeSpaceIsTrustworthy: Bool
     /// Assigned by `StorageVolume.disambiguate` when names collide.
     public var nameSuffix: String?
@@ -33,7 +34,7 @@ public struct StorageVolume: Identifiable, Hashable, Sendable, Codable {
         self.nameSuffix = nameSuffix
     }
 
-    /// What the sidebar shows. Includes the disambiguating suffix when one was needed.
+    /// `rawName`, plus the disambiguating suffix when one was assigned.
     public var displayName: String {
         guard let nameSuffix else { return rawName }
         return "\(rawName) (\(nameSuffix))"
@@ -48,7 +49,7 @@ public struct StorageVolume: Identifiable, Hashable, Sendable, Codable {
         case fuse
         case unknown
 
-        /// FAT32 cannot store a file of 4 GiB or more, full stop.
+        /// The largest single file the filesystem can store, if it has a limit.
         public var maximumFileSize: Int64? {
             switch self {
             case .fat32: return 4 * 1024 * 1024 * 1024 - 1
@@ -71,12 +72,11 @@ public struct StorageVolume: Identifiable, Hashable, Sendable, Codable {
 }
 
 extension Array where Element == StorageVolume {
-    /// Give every volume a unique display name.
+    /// Assigns a suffix to every volume whose `rawName` collides with another,
+    /// so display names are unique.
     ///
-    /// Two microSD cards, or an internal volume and a card that both call
-    /// themselves "SD card", must not be indistinguishable in the sidebar. We
-    /// prefer a human-meaningful suffix (capacity) and fall back to the mount
-    /// path, which is always unique.
+    /// Prefers capacity as the suffix and falls back to the mount path, which is
+    /// always unique.
     public func disambiguated() -> [StorageVolume] {
         var countsByName: [String: Int] = [:]
         for volume in self { countsByName[volume.rawName, default: 0] += 1 }
@@ -86,7 +86,8 @@ extension Array where Element == StorageVolume {
             guard (countsByName[volume.rawName] ?? 0) > 1 else { return volume }
             var copy = volume
             let capacity = volume.totalBytes.map { ByteFormat.short($0) }
-            // Capacity only disambiguates if it is actually distinct.
+            // Capacity only disambiguates when it is distinct across the
+            // colliding volumes.
             let sameNameCapacities = self.filter { $0.rawName == volume.rawName }
                 .compactMap { $0.totalBytes.map { ByteFormat.short($0) } }
             if let capacity, Set(sameNameCapacities).count == sameNameCapacities.count,
@@ -102,12 +103,12 @@ extension Array where Element == StorageVolume {
     }
 }
 
-/// The result of asking a device how much room is left, plus how much we believe it.
+/// A device's reported free space, together with how far it can be trusted.
 public struct FreeSpaceReport: Hashable, Sendable {
     public var reportedFreeBytes: Int64?
     public var totalBytes: Int64?
     public var isTrustworthy: Bool
-    /// Set when we actually wrote a probe file to check.
+    /// Set when free space was confirmed by writing a probe file.
     public var verifiedFreeBytes: Int64?
 
     public init(reportedFreeBytes: Int64?, totalBytes: Int64?, isTrustworthy: Bool, verifiedFreeBytes: Int64? = nil) {

@@ -1,15 +1,14 @@
 import Foundation
 
-/// Turns a stream of "n more bytes arrived" events into a rate and an ETA that
-/// a human can act on.
+/// Turns byte-count updates into a displayable transfer rate and ETA.
 ///
-/// A raw instantaneous rate jitters far too much to read, and a cumulative
-/// average is wrong for the whole first minute of any transfer that changes
-/// pace. This uses an exponentially weighted moving average over a fixed sample
-/// window, which is stable enough to display at 10 Hz and still reacts within a
-/// couple of seconds when the phone throttles or the cable is knocked.
+/// Uses an exponentially weighted moving average. A raw instantaneous rate
+/// jitters too much to read, and a cumulative average lags for the first minute
+/// of any transfer that changes pace; the EWMA is stable enough to display at
+/// 10 Hz and still reacts within a couple of seconds.
 public struct ThroughputMeter: Sendable {
-    /// Weight given to the newest sample. 0.25 settles in roughly 3 samples.
+    /// Weight given to the newest sample. At 0.25 the average settles in about
+    /// three samples.
     private let smoothing: Double
     private var lastTimestamp: TimeInterval?
     private var smoothedRate: Double = 0
@@ -21,13 +20,13 @@ public struct ThroughputMeter: Sendable {
         self.smoothing = smoothing
     }
 
-    /// Feed in bytes observed since the previous call.
+    /// Records the bytes observed since the previous call.
     public mutating func record(bytes: Int64, at timestamp: TimeInterval = Date.timeIntervalSinceReferenceDate) {
         totalBytes += bytes
         defer { lastTimestamp = timestamp }
         guard let last = lastTimestamp else { return }
         let elapsed = timestamp - last
-        // Ignore sub-millisecond gaps; they produce absurd instantaneous rates.
+        // Sub-millisecond gaps yield wildly inflated instantaneous rates.
         guard elapsed > 0.001 else { return }
         let instantaneous = Double(bytes) / elapsed
         if samples == 0 {
@@ -38,8 +37,8 @@ public struct ThroughputMeter: Sendable {
         samples += 1
     }
 
-    /// Marks a gap in the transfer (a pause, a reconnect) so the resumed rate is
-    /// not computed against wall-clock time spent doing nothing.
+    /// Marks a gap in the transfer, such as a pause or a reconnect, so the
+    /// resumed rate is not computed against idle wall-clock time.
     public mutating func suspend() {
         lastTimestamp = nil
     }
@@ -48,8 +47,8 @@ public struct ThroughputMeter: Sendable {
         samples > 0 ? Swift.max(0, smoothedRate) : 0
     }
 
-    /// Seconds remaining, or nil when we do not have enough signal to guess.
-    /// Returning nil is the honest answer; the UI shows "—" rather than a lie.
+    /// Seconds remaining, or nil when there are too few samples to estimate.
+    /// Callers render nil as a placeholder rather than a fabricated figure.
     public func estimatedTimeRemaining(totalExpectedBytes: Int64) -> TimeInterval? {
         guard samples >= 2, bytesPerSecond > 0 else { return nil }
         let remaining = totalExpectedBytes - totalBytes

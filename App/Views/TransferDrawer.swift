@@ -82,7 +82,7 @@ struct TransferDrawer: View {
         ]
         if summary.isRunning {
             parts.append(ByteFormat.rate(summary.bytesPerSecond))
-            // Nil ETA prints as a dash rather than a made-up number.
+            // A nil estimate renders as a dash rather than a guess.
             parts.append(summary.estimatedTimeRemaining.map { "\(ByteFormat.duration($0)) left" } ?? "\u{2014}")
         }
         if summary.failedItems > 0 {
@@ -188,7 +188,7 @@ struct TransferRow: View {
             return "\(ByteFormat.short(item.bytesTransferred)) of \(ByteFormat.short(item.totalBytes))"
         case .verifying: return "Verifying\u{2026}"
         case .paused:
-            // The reason resuming is cheap: the bytes already moved are kept.
+            // Name the resume point: the bytes already moved are kept.
             return "Paused at \(ByteFormat.short(item.bytesTransferred)) of \(ByteFormat.short(item.totalBytes))"
         case .completed:
             return item.verifiedChecksum != nil

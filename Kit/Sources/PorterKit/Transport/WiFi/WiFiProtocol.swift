@@ -2,9 +2,8 @@ import Foundation
 
 /// The wire format between the Mac app and the Android companion.
 ///
-/// Deliberately small and boring: JSON for metadata, raw bytes with HTTP `Range`
-/// for content. Range support is the whole reason this transport can resume,
-/// which is the one thing MTP cannot do.
+/// JSON for metadata, raw bytes with HTTP `Range` for content. Range support is
+/// what lets this transport resume an interrupted copy.
 public enum WiFiAPI {
     public static let version = "v1"
 
@@ -83,14 +82,14 @@ public enum WiFiAPI {
         public var androidRelease: String
         public var serial: String?
         public var apiVersion: String
-        /// False until the user grants all-files access on the phone.
+        /// False until all-files access is granted on the phone.
         public var hasFullFilesystemAccess: Bool
     }
 
     public struct Entry: Codable, Sendable {
         public var path: String
         public var size: Int64
-        /// Seconds since the epoch; absent when the device does not know.
+        /// Seconds since the epoch. Absent when the device does not report one.
         public var modified: Int64?
         public var kind: String
 
@@ -163,7 +162,7 @@ public enum WiFiAPI {
     public struct PairResponse: Codable, Sendable {
         public var token: String
         public var deviceName: String
-        /// SHA-256 of the server's certificate, pinned from here on.
+        /// SHA-256 of the server's certificate, pinned for subsequent requests.
         public var certificateFingerprint: String
     }
 

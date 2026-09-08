@@ -21,7 +21,7 @@ final class PendingConflict: Identifiable {
         continuation = nil
     }
 
-    /// Closing the sheet without choosing means "leave it alone".
+    /// Dismissing the sheet without a choice skips the remaining conflicts.
     func cancel() {
         continuation?.resume(returning: ConflictDecision(resolution: .skip, applyToAll: true))
         continuation = nil
@@ -47,7 +47,7 @@ extension AppModel {
 
     // MARK: - Copying
 
-    /// Device to Mac.
+    /// Copies the device-pane selection into the current Mac directory.
     func copySelectionToMac() {
         let selected = deviceEntries.filter { deviceSelection.contains($0.id) }
         guard !selected.isEmpty, let device = selectedDevice else { return }
@@ -71,7 +71,7 @@ extension AppModel {
         }
     }
 
-    /// Mac to device.
+    /// Copies the Mac-pane selection into the current device directory.
     func copySelectionToDevice() {
         let urls = localEntries.filter { localSelection.contains($0.id) }.map(\.url)
         guard !urls.isEmpty else { return }
@@ -96,10 +96,10 @@ extension AppModel {
         }
     }
 
-    /// Shows anything the user needs to know, then queues the work.
+    /// Surfaces the plan's warnings, then enqueues its items.
     ///
-    /// A blocking warning — no room, or a file over the card's size ceiling —
-    /// stops the batch here rather than letting it fail at 90%.
+    /// A blocking warning - insufficient space, or a file over the volume's
+    /// per-file limit - stops the batch rather than letting it fail partway.
     private func present(_ plan: TransferPlan) async {
         await MainActor.run {
             self.planWarnings = plan.warnings
@@ -176,8 +176,8 @@ extension AppModel {
         refreshLocalPane()
     }
 
-    /// Deletes on the device. Irreversible: Android has no Trash for us to use,
-    /// so the caller must have confirmed first.
+    /// Deletes the device-pane selection. Irreversible: Android exposes no
+    /// Trash, so callers must confirm first.
     func deleteSelectedOnDevice() {
         let doomed = deviceEntries.filter { deviceSelection.contains($0.id) }
         guard let device = selectedDevice, !doomed.isEmpty else { return }
@@ -194,7 +194,7 @@ extension AppModel {
         }
     }
 
-    /// Moves to the Trash rather than deleting, because on the Mac we can.
+    /// Moves the Mac-pane selection to the Trash.
     func trashSelectedOnMac() {
         let doomed = localEntries.filter { localSelection.contains($0.id) }
         for file in doomed {

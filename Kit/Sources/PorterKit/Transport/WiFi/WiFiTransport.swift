@@ -3,9 +3,9 @@ import Foundation
 
 /// Talks to the Android companion app over the local network.
 ///
-/// Same product, different pipe: the UI above this does not change. TLS with a
-/// certificate pinned at pairing time, and a bearer token issued by the six-digit
-/// code shown on the phone. Nothing leaves the LAN and there is no account.
+/// Uses TLS with a certificate pinned at pairing time and a bearer token issued
+/// against the six-digit code shown on the phone. Traffic stays on the LAN and
+/// no account is involved.
 public actor WiFiTransport: DeviceTransport {
     public nonisolated let kind: TransportKind = .wifi
 
@@ -17,8 +17,8 @@ public actor WiFiTransport: DeviceTransport {
             supportsDeviceSideChecksum: true,
             supportsMtimePreservation: true,
             reportsAccurateSizes: true,
-            // Wi-Fi, not USB, is the bottleneck here; more streams do not help
-            // and they make the per-file progress bars useless.
+            // The network is the bottleneck, so extra streams add no
+            // throughput and only make per-file progress noisier.
             maximumConcurrentStreams: 2
         )
     }
@@ -35,8 +35,8 @@ public actor WiFiTransport: DeviceTransport {
 
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 30
-        // A 20 GB copy over Wi-Fi legitimately takes hours; the per-chunk
-        // request timeout above is the one that should ever fire.
+        // A large copy legitimately runs for hours, so only the per-request
+        // timeout above should ever fire.
         configuration.timeoutIntervalForResource = .greatestFiniteMagnitude
         configuration.waitsForConnectivity = false
         self.session = URLSession(
@@ -183,8 +183,8 @@ public actor WiFiTransport: DeviceTransport {
         guard let http = response as? HTTPURLResponse else {
             throw TransferError.protocolError("no HTTP response")
         }
-        // A server that ignores Range and replies 200 would silently restart the
-        // file from zero and corrupt a resume. Refuse rather than accept that.
+        // A server that ignores Range and replies 200 restarts the file from
+        // zero, corrupting the resume, so treat it as an error.
         if range.offset > 0 && http.statusCode != 206 {
             throw TransferError.protocolError("the phone ignored the resume request")
         }
@@ -220,9 +220,8 @@ public actor WiFiTransport: DeviceTransport {
         defer { try? handle.close() }
         try handle.seek(toOffset: UInt64(destinationOffset))
 
-        // Uploaded a block at a time rather than as one long request: it gives
-        // honest progress, and a dropped connection costs one block instead of
-        // the whole file.
+        // Upload a block at a time rather than as one long request: progress
+        // is accurate, and a dropped connection costs one block, not the file.
         var offset = destinationOffset
         while true {
             try Task.checkCancellation()
@@ -246,7 +245,7 @@ public actor WiFiTransport: DeviceTransport {
 
     public func truncate(_ path: RemotePath, to length: Int64) async throws {
         // The companion truncates implicitly: a write at offset N discards
-        // anything past N, so a resumed push always lands on a clean boundary.
+        // anything past N, so a resumed push lands on a clean boundary.
         try await sendRaw(.write(path, offset: length))
     }
 
@@ -257,7 +256,7 @@ public actor WiFiTransport: DeviceTransport {
     }
 }
 
-/// What pairing produced: a bearer token and the certificate we now expect.
+/// The bearer token and pinned certificate produced by pairing.
 public struct WiFiCredentials: Hashable, Sendable {
     public var token: String?
     /// Lowercase hex SHA-256 of the server certificate's DER encoding.

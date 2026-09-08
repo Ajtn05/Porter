@@ -2,10 +2,9 @@ import Foundation
 
 /// Finds an `adb` binary.
 ///
-/// The app ships its own copy in `Contents/Resources/platform-tools`, because
-/// "install Android platform-tools first" is exactly the kind of step that makes
-/// people give up and go back to emailing themselves photos. The other paths are
-/// a courtesy for developers who already have the SDK.
+/// The app ships its own copy in `Contents/Resources/platform-tools` so that no
+/// separate platform-tools install is required. The remaining paths pick up an
+/// SDK that is already present.
 public enum ADBLocator {
     public static let bundledSubdirectory = "platform-tools"
 
@@ -22,11 +21,11 @@ public enum ADBLocator {
                                       environment: [String: String] = ProcessInfo.processInfo.environment) -> [URL] {
         var candidates: [URL] = []
 
-        // 1. The copy we ship. Always preferred: we know its version.
+        // 1. The bundled copy, preferred because its version is known.
         if let resources = bundle.resourceURL {
             candidates.append(resources.appendingPathComponent("\(bundledSubdirectory)/adb"))
         }
-        // 2. A developer's own SDK.
+        // 2. An SDK named by the environment.
         for key in ["ANDROID_SDK_ROOT", "ANDROID_HOME"] {
             if let root = environment[key], !root.isEmpty {
                 candidates.append(URL(fileURLWithPath: root).appendingPathComponent("platform-tools/adb"))
@@ -34,7 +33,7 @@ public enum ADBLocator {
         }
         let home = FileManager.default.homeDirectoryForCurrentUser
         candidates.append(home.appendingPathComponent("Library/Android/sdk/platform-tools/adb"))
-        // 3. Homebrew and friends.
+        // 3. Common package-manager locations.
         candidates.append(URL(fileURLWithPath: "/opt/homebrew/bin/adb"))
         candidates.append(URL(fileURLWithPath: "/usr/local/bin/adb"))
         // 4. Anything on PATH.

@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# Downloads Google's Android platform-tools and puts `adb` where the app bundle
-# expects it.
+# Downloads Google's Android platform-tools and installs `adb` where the app
+# bundle expects it.
 #
-# The app ships its own adb because "install Android platform-tools first" is
-# exactly the kind of step that makes people give up and go back to emailing
-# themselves photos.
+# The app ships its own adb so that no separate platform-tools install is
+# required.
 #
-# This is not run automatically: it fetches a binary from Google, and that is
-# the packager's decision to make, not the build system's.
+# Not run automatically: it fetches a binary from Google, which is the
+# packager's decision rather than the build system's.
 set -euo pipefail
 
 DESTINATION="${1:-App/Resources/platform-tools}"
@@ -24,7 +23,7 @@ shasum -a 256 "$WORK/platform-tools.zip"
 unzip -q "$WORK/platform-tools.zip" -d "$WORK"
 mkdir -p "$DESTINATION"
 
-# adb needs its own support files alongside it, not just the binary.
+# adb needs its support files alongside it, not just the binary.
 for file in adb; do
     cp "$WORK/platform-tools/$file" "$DESTINATION/"
 done

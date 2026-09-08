@@ -161,7 +161,7 @@ struct ChecksumTests {
         let parsed = try #require(ChecksumService.parseSumOutput(line, algorithm: .sha256))
         #expect(parsed.value == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
 
-        // Wrong length for the algorithm must not be accepted as a hash.
+        // A hash of the wrong length for the algorithm must be rejected.
         #expect(ChecksumService.parseSumOutput("deadbeef  /sdcard/x", algorithm: .sha256) == nil)
         #expect(ChecksumService.parseSumOutput("sha256sum: not found", algorithm: .sha256) == nil)
         #expect(ChecksumService.parseSumOutput(

@@ -30,8 +30,8 @@ struct DeviceMergeTests {
 
     @Test("A phone set to charge only is reported as exactly that")
     func chargingOnlyIsNamed() throws {
-        // The most common support question in the whole category: the phone is
-        // on the bus, adb cannot see it, and it publishes no storage interface.
+        // The phone is on the bus, adb cannot see it, and it publishes no
+        // storage interface.
         let devices = DeviceMerge.merge(
             usb: [usbSnapshot(serial: "ABC123", interfaces: [chargeOnlyInterface])],
             adb: []
@@ -40,7 +40,7 @@ struct DeviceMergeTests {
         #expect(device.readiness == .chargingOnly)
         #expect(!device.readiness.isBrowsable)
 
-        // And the message names the fix, not just the symptom.
+        // The message names the fix, not just the symptom.
         let error = TransferError.deviceNotReady(device.id, .chargingOnly)
         #expect(try #require(error.errorDescription).contains("charge only"))
         #expect(try #require(error.recoverySuggestion).contains("File Transfer"))
@@ -57,7 +57,7 @@ struct DeviceMergeTests {
         let device = try #require(devices.first)
         #expect(device.transport == .adb)
         #expect(device.displayName == "Pixel 7")
-        // USB details are still attached, so the UI can show the real product name.
+        // USB details are still attached, so the product name is available.
         #expect(device.usb?.productName == "Pixel 7")
     }
 
@@ -125,14 +125,14 @@ struct DeviceMergeTests {
 
     @Test("A non-Android USB device is ignored entirely")
     func nonAndroidIgnored() {
-        // The bus is full of keyboards and hubs; only phones belong in the list.
+        // The bus carries keyboards and hubs; only phones belong in the list.
         let devices = DeviceMerge.merge(
             usb: [usbSnapshot(serial: "KBD", vendorID: 0x05AC, product: "Keyboard",
                               interfaces: [USBInterface(interfaceClass: 3, interfaceSubclass: 1, interfaceProtocol: 1)])],
             adb: []
         )
-        // The monitor filters these out before merge; merge itself keeps whatever
-        // it is handed, so this documents the contract at the boundary.
+        // The monitor filters these out before merge, which keeps whatever it
+        // is handed. This documents the contract at that boundary.
         #expect(devices.count == 1)
         #expect(devices[0].readiness == .chargingOnly)
     }

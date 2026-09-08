@@ -2,19 +2,17 @@ import CryptoKit
 import Foundation
 
 public enum ChecksumAlgorithm: String, Sendable, Codable {
-    /// SHA-256 is the default and the only algorithm both ends always agree on.
+    /// The default, and the only algorithm both ends always support.
     ///
-    /// A faster non-cryptographic hash (xxHash, BLAKE3) is the obvious instinct
-    /// here, but on Apple silicon SHA-256 runs on dedicated instructions at
-    /// several GB/s, which is comfortably faster than USB 3 can deliver bytes.
-    /// The hash is therefore never the bottleneck, and choosing it buys us the
-    /// one thing that matters: every Android device already ships `sha256sum`
-    /// in toybox, so the device side needs no helper binary to verify a file
-    /// in place.
+    /// A faster non-cryptographic hash would not help: on Apple silicon SHA-256
+    /// runs on dedicated instructions at several GB/s, well above what USB 3
+    /// delivers, so hashing is never the bottleneck. In exchange, every Android
+    /// device ships `sha256sum` in toybox, so verifying a file in place needs no
+    /// helper binary on the device.
     case sha256
 
-    /// MD5 is offered only because a handful of older ROMs ship `md5sum` but
-    /// not `sha256sum`. It is used for corruption detection, never for security.
+    /// Fallback for older ROMs that ship `md5sum` but not `sha256sum`. Used for
+    /// corruption detection only, never for security.
     case md5
 
     public var deviceCommand: String {
@@ -66,8 +64,8 @@ public struct ChecksumHasher: Sendable {
 }
 
 public enum ChecksumService {
-    /// Hashes a local file in chunks. `upTo` lets a resume verify only the
-    /// prefix that has actually been written.
+    /// Hashes a local file in chunks. Pass `upTo` to verify only the prefix
+    /// written so far, as a resume does.
     public static func hashLocalFile(
         at url: URL,
         algorithm: ChecksumAlgorithm = .sha256,
@@ -88,8 +86,8 @@ public enum ChecksumService {
         return hasher.finalize()
     }
 
-    /// Parses `sha256sum`/`md5sum` output as emitted by Android's toybox:
-    /// `<hex>  <path>`, two spaces, path may contain spaces.
+    /// Parses `sha256sum`/`md5sum` output in the form toybox emits:
+    /// `<hex>  <path>`, separated by two spaces, path may contain spaces.
     public static func parseSumOutput(_ output: String, algorithm: ChecksumAlgorithm) -> Checksum? {
         let line = output.split(separator: "\n").first.map(String.init)?
             .trimmingCharacters(in: .whitespaces) ?? ""

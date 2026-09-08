@@ -1,10 +1,9 @@
 import Foundation
 
-/// Owns discovery and hands out transports.
+/// Owns device discovery and vends transports.
 ///
-/// Everything above this layer asks for a device by ID and gets something it can
-/// read and write. Which pipe that turns out to be — and whether it changed
-/// since the last call because the cable was pulled — is this object's problem.
+/// Callers ask for a device by ID and get a readable, writable transport. This
+/// type decides which one, and rebuilds it when the connection changes.
 public actor DeviceCoordinator: TransportResolver {
     private let usbMonitor = USBDeviceMonitor()
     private var usbSnapshots: [USBDeviceMonitor.Snapshot] = []
@@ -15,7 +14,7 @@ public actor DeviceCoordinator: TransportResolver {
     private var continuations: [UUID: AsyncStream<[Device]>.Continuation] = [:]
 
     public private(set) var adbURL: URL?
-    /// Nil while adb is present. Set when it is not, so the UI can explain.
+    /// Nil while adb is present; set to a user-facing explanation when it is not.
     public private(set) var adbUnavailableReason: String?
 
     public init(adbURL: URL? = nil) {
@@ -44,9 +43,9 @@ public actor DeviceCoordinator: TransportResolver {
         }
         guard pollTask == nil else { return }
         pollTask = Task { [weak self] in
-            // adb has no change notification, so it gets polled. The USB monitor
-            // is event-driven, so a phone appearing is still noticed instantly;
-            // this only catches the gap between plugging in and adb authorising.
+            // adb offers no change notification, so poll it. Attach and detach
+            // still arrive instantly from the event-driven USB monitor; this
+            // only covers the gap between plugging in and adb authorising.
             while !Task.isCancelled {
                 await self?.refresh()
                 try? await Task.sleep(for: .seconds(2))
@@ -78,7 +77,7 @@ public actor DeviceCoordinator: TransportResolver {
         let merged = DeviceMerge.merge(usb: usbSnapshots, adb: adbListings, wireless: wirelessDevices)
 
         // Drop cached transports for devices that went away, so a reconnect
-        // builds a fresh one rather than reusing a dead handle.
+        // builds a fresh one instead of reusing a dead handle.
         let liveIDs = Set(merged.map(\.id))
         for id in transports.keys where !liveIDs.contains(id) {
             transports[id] = nil
@@ -128,8 +127,8 @@ public actor DeviceCoordinator: TransportResolver {
         }
     }
 
-    /// Forgets a device's transport so the next request reconnects.
-    /// Used when a transfer reports a disconnect mid-flight.
+    /// Discards a device's cached transport so the next request reconnects.
+    /// Called when a transfer reports a disconnect mid-flight.
     public func invalidateTransport(for deviceID: DeviceID) {
         transports[deviceID] = nil
     }

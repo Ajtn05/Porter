@@ -6,7 +6,7 @@ public struct RemoteFile: Identifiable, Hashable, Sendable, Codable {
     public var modified: Date?
     public var kind: Kind
     public var posixPermissions: UInt16?
-    /// Present when the device gave us a link target we could not resolve.
+    /// Set when the device reported a link target that could not be resolved.
     public var symlinkTarget: String?
 
     public var id: String { path.string }

@@ -1,8 +1,7 @@
 import Foundation
 
 public enum ByteFormat {
-    /// Finder-style sizes: decimal units, because that is what macOS shows and a
-    /// mismatch here reads as a bug to anyone comparing the two windows.
+    /// Formats a byte count in decimal units, matching what Finder shows.
     public static func short(_ bytes: Int64) -> String {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
@@ -15,7 +14,7 @@ public enum ByteFormat {
         return short(Int64(bytesPerSecond)) + "/s"
     }
 
-    /// A compact duration: "12s", "4m 03s", "1h 22m".
+    /// Formats a duration compactly: "12s", "4m 03s", "1h 22m".
     public static func duration(_ seconds: TimeInterval) -> String {
         guard seconds.isFinite, seconds >= 0 else { return "—" }
         let total = Int(seconds.rounded())

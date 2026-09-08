@@ -93,7 +93,7 @@ struct TransferEngineTests {
             let item = settled.first { $0.remotePath.string == path }
             #expect(item?.verifiedChecksum == sha256(data))
         }
-        // Nothing partial is left lying around.
+        // No sidecars are left behind.
         let leftovers = try FileManager.default.contentsOfDirectory(atPath: sandbox.path)
             .filter { $0.hasSuffix(TransferItem.partialSuffix) }
         #expect(leftovers.isEmpty)
@@ -125,7 +125,7 @@ struct TransferEngineTests {
         let payload = makePayload(4_000_000, seed: 11)
         let transport = FakeTransport()
         await transport.addFile("/sdcard/big.bin", contents: payload)
-        // Cut the stream at roughly half, the way a knocked cable does.
+        // Cut the stream at roughly half, as a disconnected cable would.
         await transport.setFailReadAfterBytes(2_000_000)
 
         let (engine, queue) = makeEngine(transport, sandbox: sandbox, concurrency: 1)
@@ -134,9 +134,9 @@ struct TransferEngineTests {
         await engine.enqueue([item])
         let interrupted = try await settle(queue)
 
-        // A disconnect is a pause, not a failure the user has to clear.
+        // A disconnect becomes a pause, not a failure.
         #expect(interrupted.first?.state == .paused)
-        // The crucial guarantee: the real name does not exist yet.
+        // The key guarantee: the final name does not exist yet.
         #expect(!FileManager.default.fileExists(atPath: local.path))
         #expect(FileManager.default.fileExists(atPath: item.localPartialURL.path))
 
@@ -159,7 +159,7 @@ struct TransferEngineTests {
         await engine.enqueue([pullItem("/sdcard/big.bin", to: local, size: Int64(payload.count))])
         try await settle(queue)
 
-        // Cable back in.
+        // Reconnect.
         await transport.setFailReadAfterBytes(nil)
         await engine.resumeAll()
         let finished = try await settle(queue)
@@ -168,7 +168,7 @@ struct TransferEngineTests {
         #expect(try Data(contentsOf: local) == payload)
         #expect(!FileManager.default.fileExists(atPath: local.path + TransferItem.partialSuffix))
 
-        // It resumed rather than started over: the second read asked for a
+        // It resumed rather than restarted: the second read asked for a
         // non-zero, block-aligned offset.
         let offset = await transport.lastReadOffset
         #expect(offset > 0)
@@ -215,7 +215,7 @@ struct TransferEngineTests {
         let settled = try await settle(queue)
 
         #expect(settled.first?.state == .completed)
-        #expect(settled.first?.verifiedChecksum == nil)   // honest: nothing was verified
+        #expect(settled.first?.verifiedChecksum == nil)   // nothing was verified
         #expect(try Data(contentsOf: local) == payload)
     }
 
@@ -287,7 +287,7 @@ struct TransferEngineTests {
 
         #expect(settled.first?.state == .completed)
         #expect(await transport.contents(of: "/sdcard/Download/upload.bin") == payload)
-        // The sidecar is gone; only the real name remains.
+        // The sidecar is gone and only the final name remains.
         #expect(await transport.exists("/sdcard/Download/upload.bin.porterpart") == false)
         #expect(settled.first?.verifiedChecksum == sha256(payload))
     }
@@ -344,8 +344,8 @@ struct TransferEngineTests {
         let sandbox = try makeSandbox()
         defer { try? FileManager.default.removeItem(at: sandbox) }
 
-        // Found on hardware: Pause returned immediately but `adb pull` ran to
-        // completion, so a paused 4 GB transfer kept going for another minute.
+        // Regression: Pause returned immediately while `adb pull` ran to
+        // completion, so a paused transfer kept copying.
         let payload = makePayload(3_000_000, seed: 53)
         let transport = FakeTransport()
         await transport.addFile("/sdcard/slow.bin", contents: payload)
@@ -357,16 +357,16 @@ struct TransferEngineTests {
         let item = pullItem("/sdcard/slow.bin", to: local, size: Int64(payload.count))
         await engine.enqueue([item])
 
-        // Let it get going, then pause.
+        // Let it get under way, then pause.
         try await Task.sleep(for: .milliseconds(120))
         await engine.pause(item.id)
 
         let partialSize = (try? Data(contentsOf: item.localPartialURL).count) ?? 0
         #expect(partialSize > 0)
-        #expect(partialSize < payload.count)   // it really stopped
+        #expect(partialSize < payload.count)   // it stopped short of the end
         #expect(!FileManager.default.fileExists(atPath: local.path))
 
-        // And pause left nothing running, so nothing grows behind our back.
+        // Pause left nothing running, so the sidecar stops growing.
         let afterPause = partialSize
         try await Task.sleep(for: .milliseconds(200))
         #expect(((try? Data(contentsOf: item.localPartialURL).count) ?? 0) == afterPause)
@@ -377,9 +377,9 @@ struct TransferEngineTests {
         let sandbox = try makeSandbox()
         defer { try? FileManager.default.removeItem(at: sandbox) }
 
-        // Found on hardware: the interrupted attempt poisoned the transport's
-        // cached answer to "can this device hash files?", so the resumed copy
-        // completed while quietly reporting that nothing had been verified.
+        // Regression: the interrupted attempt poisoned the transport's cached
+        // answer to whether the device can hash files, so the resumed copy
+        // completed while reporting that nothing had been verified.
         let payload = makePayload(3_000_000, seed: 59)
         let transport = FakeTransport()
         await transport.addFile("/sdcard/resume.bin", contents: payload)
@@ -410,8 +410,8 @@ struct TransferEngineTests {
         defer { try? FileManager.default.removeItem(at: sandbox) }
 
         // MTP is strictly serial: two concurrent streams are slower than one,
-        // and some devices simply fail. The user's concurrency preference is a
-        // ceiling, and the transport's own limit wins.
+        // and some devices fail outright. The transport's limit wins over the
+        // engine's configured concurrency.
         let transport = FakeTransport(kind: .mtp, capabilities: TransportCapabilities(
             supportsRangedReads: false, supportsResumableWrites: false,
             supportsDeviceSideChecksum: true, supportsMtimePreservation: false,
@@ -421,7 +421,7 @@ struct TransferEngineTests {
             await transport.addFile("/sdcard/f\(index).bin", contents: makePayload(120_000, seed: UInt8(index + 1)))
         }
 
-        // Engine allowed 4; the transport says 1.
+        // Engine allows 4; the transport allows 1.
         let (engine, queue) = makeEngine(transport, sandbox: sandbox, concurrency: 4)
         let items = (0..<6).map { index in
             pullItem("/sdcard/f\(index).bin",
@@ -446,7 +446,7 @@ struct TransferEngineTests {
     @Test("Reports a real rate and a real ETA, or nothing at all")
     func throughputAndETA() {
         var meter = ThroughputMeter()
-        // Two samples one second apart, 10 MB each.
+        // Three samples one second apart, 10 MB each.
         meter.record(bytes: 10_000_000, at: 0)
         meter.record(bytes: 10_000_000, at: 1)
         meter.record(bytes: 10_000_000, at: 2)
@@ -457,7 +457,7 @@ struct TransferEngineTests {
         #expect(remaining != nil)
         #expect(abs((remaining ?? 0) - 10) < 2)
 
-        // With no samples there is no honest estimate to give.
+        // With no samples there is no estimate to give.
         let fresh = ThroughputMeter()
         #expect(fresh.estimatedTimeRemaining(totalExpectedBytes: 1000) == nil)
         #expect(fresh.bytesPerSecond == 0)

@@ -31,7 +31,7 @@ struct TransferPlannerTests {
 
         #expect(plan.fileCount == 3)
         #expect(plan.totalBytes == 350)
-        // Directory placeholders come first so no file races its parent folder.
+        // Directory placeholders come first, so no file precedes its parent.
         let firstFileIndex = plan.items.firstIndex { !$0.isDirectoryPlaceholder } ?? 0
         let leadingAreAllDirectories = plan.items.prefix(firstFileIndex)
             .allSatisfy { $0.isDirectoryPlaceholder }
@@ -48,7 +48,7 @@ struct TransferPlannerTests {
         let big = sandbox.appendingPathComponent("movie.mkv")
         FileManager.default.createFile(atPath: big.path, contents: nil)
         let handle = try FileHandle(forWritingTo: big)
-        // Sparse: 5 GiB of address space, a few bytes of actual disk.
+        // Sparse: 5 GiB of address space, a few bytes on disk.
         try handle.truncate(atOffset: 5 * 1024 * 1024 * 1024)
         try handle.close()
 
@@ -203,7 +203,7 @@ struct TransferQueueTests {
         let items = await reloaded.orderedItems
 
         #expect(items.count == 2)
-        // Nothing is running after a relaunch, whatever the manifest said.
+        // Nothing is running after a relaunch, whatever the manifest recorded.
         #expect(items[0].state == .queued)
         #expect(items[0].bytesTransferred == 40)   // the resume point is kept
         #expect(items[1].state == .completed)

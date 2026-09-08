@@ -1,21 +1,21 @@
 import Foundation
 
-/// Reconciles the two filesystems' naming rules and reports what it changed.
+/// Reconciles the naming rules of the source and destination filesystems, and
+/// reports every change it makes.
 ///
-/// Android's ext4/F2FS volumes allow almost any byte except `/` and NUL. macOS
-/// (HFS+/APFS) also allows almost anything, but `:` is historically the path
-/// separator and Finder still renders it as `/`, so a file called `a:b` on the
-/// phone shows up as `a/b` on the Mac and breaks any script that walks the tree.
-/// The FAT32 and exFAT volumes on removable cards are far stricter.
+/// Android's ext4/F2FS volumes allow any byte except `/` and NUL. macOS allows
+/// almost as much, but `:` was historically the path separator and Finder still
+/// renders it as `/`, so `a:b` on the phone appears as `a/b` on the Mac. FAT32
+/// and exFAT cards are stricter again.
 ///
-/// The rule the app follows: never silently mangle. Sanitize, then tell the user
-/// exactly which names were altered.
+/// Names are never altered silently: each change is reported back to the caller
+/// so it can be surfaced.
 public struct FilenameSanitizer: Sendable {
     public enum Destination: Sendable {
         case macOS
-        /// Android internal storage, or any ext4/F2FS volume.
+        /// Android internal storage, or any other ext4/F2FS volume.
         case androidPOSIX
-        /// FAT32/exFAT removable storage, which is much stricter.
+        /// FAT32/exFAT removable storage, which is considerably stricter.
         case androidFAT
     }
 
@@ -31,19 +31,19 @@ public struct FilenameSanitizer: Sendable {
     }
 
     private static let fatIllegal: Set<Character> = ["\\", "/", ":", "*", "?", "\"", "<", ">", "|"]
-    /// Reserved DOS device names, still rejected by exFAT drivers on some devices.
+    /// Reserved DOS device names, still rejected by some exFAT drivers.
     private static let fatReserved: Set<String> = [
         "CON", "PRN", "AUX", "NUL",
         "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
         "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
     ]
 
-    /// Returns the name to use, and a `Change` when it differs from the input.
+    /// Returns the name to use, plus a `Change` when it differs from the input.
     public func sanitize(_ name: String) -> (name: String, change: Change?) {
         var result = name
         var reasons: [String] = []
 
-        // A NUL or a separator is illegal everywhere and is never recoverable.
+        // NUL and the path separator are illegal on every destination.
         if result.contains("\0") {
             result = result.replacingOccurrences(of: "\0", with: "")
             reasons.append("removed a null byte")
@@ -51,8 +51,8 @@ public struct FilenameSanitizer: Sendable {
 
         switch destination {
         case .macOS:
-            // Finder displays ":" as "/". Swap it for a visually similar
-            // character rather than dropping it, so the name stays readable.
+            // Finder renders ":" as "/". Substitute a visually similar
+            // character rather than dropping it, to keep the name readable.
             if result.contains(":") {
                 result = result.replacingOccurrences(of: ":", with: "\u{2236}")
                 reasons.append("replaced \u{201C}:\u{201D}, which Finder shows as \u{201C}/\u{201D}")
@@ -81,9 +81,8 @@ public struct FilenameSanitizer: Sendable {
             }
         }
 
-        // macOS caps a single path component at 255 bytes of UTF-8; Android's
-        // ext4 does the same. Truncate on a character boundary, keeping the
-        // extension, so the file still opens in the right app.
+        // Both macOS and ext4 cap a path component at 255 bytes of UTF-8.
+        // Truncate on a character boundary and keep the extension.
         if result.utf8.count > 255 {
             result = truncateToUTF8Bytes(result, limit: 255)
             reasons.append("shortened a name longer than 255 bytes")
@@ -107,7 +106,7 @@ public struct FilenameSanitizer: Sendable {
     }
 
     private func truncateToUTF8Bytes(_ value: String, limit: Int) -> String {
-        // Preserve the extension: "…verylong.jpg" beats "…verylo" for usability.
+        // Keep the extension so the file still opens in the right app.
         let ext = (value as NSString).pathExtension
         let suffix = ext.isEmpty ? "" : "." + ext
         let suffixBytes = suffix.utf8.count

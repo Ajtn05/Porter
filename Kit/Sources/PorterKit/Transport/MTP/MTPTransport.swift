@@ -1,11 +1,10 @@
 import Foundation
 
-/// The backend that actually speaks PTP/MTP to the device.
+/// Speaks PTP/MTP to the device.
 ///
-/// Kept behind a protocol so the transport's semantics — which are the awkward
-/// part — are written and tested once, independently of whether the bytes are
-/// moved by libmtp, by a bundled libusb implementation, or by a future
-/// system framework.
+/// Behind a protocol so the transport's semantics are written and tested once,
+/// independently of whether the bytes are moved by libmtp, a bundled libusb
+/// implementation, or a system framework.
 public protocol MTPBackend: Sendable {
     func openSession() async throws
     func closeSession() async
@@ -55,26 +54,24 @@ public struct MTPObject: Hashable, Sendable {
     }
 }
 
-/// The fallback for phones with USB debugging switched off.
+/// Fallback transport for phones with USB debugging switched off.
 ///
-/// MTP is a genuinely worse protocol and the capabilities below say so rather
-/// than pretending otherwise: it is strictly serial, it has no way to hash a
-/// file on the device, its free-space figures are frequently stale, and many
-/// implementations round or omit modification times. The engine reads those
-/// flags and adjusts — it verifies by size alone, refuses to promise a resume it
-/// cannot deliver, and probes free space before a large copy instead of
-/// trusting what the device claims.
+/// The capabilities below declare MTP's limits rather than working around them:
+/// it is strictly serial, cannot hash a file on the device, reports stale
+/// free-space figures, and often rounds or omits modification times. The engine
+/// reads those flags and adapts, verifying by size alone, declining to promise
+/// resume, and probing free space before a large copy.
 ///
 /// - Note: The PTP/MTP wire implementation is not written. Every file operation
-///   below reports that plainly instead of failing in a way that looks like a
-///   bug. See `Docs/status.md`.
+///   below reports that explicitly rather than failing opaquely. See
+///   `Docs/status.md`.
 public actor MTPTransport: DeviceTransport {
     public nonisolated let kind: TransportKind = .mtp
 
     public nonisolated var capabilities: TransportCapabilities {
         TransportCapabilities(
-            // GetPartialObject exists in the spec, but is unreliable enough in
-            // shipped Android MTP stacks that we do not promise resume on it.
+            // GetPartialObject is in the spec, but is unreliable enough in
+            // shipped Android MTP stacks that resume cannot rely on it.
             supportsRangedReads: false,
             supportsResumableWrites: false,
             supportsDeviceSideChecksum: false,
@@ -97,7 +94,7 @@ public actor MTPTransport: DeviceTransport {
         return backend
     }
 
-    /// The single, honest error every unimplemented path returns.
+    /// The error every unimplemented path returns.
     static var unavailable: TransferError {
         .transportUnavailable(
             .mtp,
@@ -126,7 +123,8 @@ public actor MTPTransport: DeviceTransport {
                 freeBytes: storage.freeBytes,
                 isRemovable: storage.isRemovable,
                 filesystem: .unknown,
-                // The reason the engine probes before a large copy.
+                // MTP free-space figures are stale often enough that the
+                // engine probes before a large copy.
                 freeSpaceIsTrustworthy: false
             )
         }.disambiguated()
@@ -156,9 +154,9 @@ public actor MTPTransport: DeviceTransport {
     }
 
     public func checksum(_ path: RemotePath, algorithm: ChecksumAlgorithm) async throws -> Checksum? {
-        // No device-side hashing in MTP. Saying "nil" rather than throwing lets
-        // the engine fall back to its size check and report honestly that the
-        // file was not verified.
+        // MTP has no device-side hashing. Returning nil rather than throwing
+        // lets the engine fall back to its size check and mark the file
+        // unverified.
         nil
     }
 

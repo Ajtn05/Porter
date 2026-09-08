@@ -3,15 +3,15 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 extension UTType {
-    /// Identifies an in-app drag of files that live on the phone. Declared in
-    /// Info.plist so the drag carries a real type rather than opaque bytes.
+    /// Type for an in-app drag of files that live on the phone. Exported in
+    /// Info.plist so the drag carries a declared type rather than opaque bytes.
     static let porterRemoteFiles = UTType(exportedAs: "app.porter.remote-files")
 }
 
-/// The payload for dragging device files into the Mac pane.
+/// Payload for dragging device files into the Mac pane.
 ///
-/// Only paths travel; the bytes are fetched by the transfer engine once the drop
-/// lands, which is what keeps dragging a 4 GB video instant.
+/// Carries paths only. The engine fetches the bytes once the drop lands, so the
+/// drag itself is independent of file size.
 struct RemoteFileDrag: Codable, Transferable, Sendable {
     var deviceID: String
     var paths: [String]
@@ -170,7 +170,7 @@ struct DevicePane: View {
             Button("Delete", role: .destructive) { model.deleteSelectedOnDevice() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            // Android has no Trash we can put things in, so this really is final.
+            // Android exposes no Trash, so the delete is final.
             Text("This cannot be undone. Deleted files do not go to a Trash on the phone.")
         }
     }

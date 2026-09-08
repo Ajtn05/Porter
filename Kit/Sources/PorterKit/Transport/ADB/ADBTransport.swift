@@ -1,10 +1,10 @@
 import Foundation
 
-/// The fast path: talks to the device through `adb`.
+/// Talks to the device through `adb`.
 ///
-/// Preferred whenever USB debugging is on, because it is the only transport that
-/// can seek within a file, hash a file in place, report honest sizes, and set an
-/// mtime. Everything the engine wants, MTP has to fake.
+/// Preferred whenever USB debugging is enabled: it is the only transport that
+/// can seek within a file, hash a file in place, report accurate sizes, and set
+/// an mtime.
 public actor ADBTransport: DeviceTransport {
     public nonisolated let kind: TransportKind = .adb
 
@@ -15,8 +15,8 @@ public actor ADBTransport: DeviceTransport {
             supportsDeviceSideChecksum: true,
             supportsMtimePreservation: true,
             reportsAccurateSizes: true,
-            // adb multiplexes fine, but the bottleneck is the USB endpoint, and
-            // four concurrent streams is where the gain flattens on USB 3.
+            // adb multiplexes well, but the USB endpoint is the bottleneck.
+            // On USB 3 the gain flattens at four concurrent streams.
             maximumConcurrentStreams: 4
         )
     }
@@ -46,8 +46,8 @@ public actor ADBTransport: DeviceTransport {
         )
     }
 
-    /// Runs a shell command and returns stdout, mapping the usual Android
-    /// failures onto errors the UI can explain.
+    /// Runs a shell command and returns stdout, mapping the common Android
+    /// failures onto `TransferError` cases.
     @discardableResult
     private func shell(_ command: String, timeout: Duration? = .seconds(30)) async throws -> String {
         let result = try await adb(["shell", command], timeout: timeout)
@@ -72,7 +72,7 @@ public actor ADBTransport: DeviceTransport {
     }
 
     private func extractPath(from message: String) -> String? {
-        // Shell errors look like: "ls: /sdcard/nope: No such file or directory"
+        // Shell errors take the form "ls: /sdcard/nope: No such file or directory".
         let parts = message.split(separator: ":").map { $0.trimmingCharacters(in: .whitespaces) }
         return parts.first(where: { $0.hasPrefix("/") })
     }
@@ -95,7 +95,7 @@ public actor ADBTransport: DeviceTransport {
     // MARK: - Lifecycle
 
     public func connect() async throws {
-        // `adb devices` implicitly starts the server; doing it explicitly keeps
+        // The server starts implicitly on first use. Starting it here keeps
         // the first real command from paying the daemon-startup latency.
         _ = try? await ProcessRunner.run(executable: adbURL, arguments: ["start-server"], timeout: .seconds(20))
 
@@ -107,8 +107,8 @@ public actor ADBTransport: DeviceTransport {
             throw TransferError.deviceNotReady(cachedDevice.id, entry.readiness)
         }
 
-        // Cache the device's timezone: `touch -t` speaks local device time, and
-        // getting this wrong shifts every preserved mtime by hours.
+        // Cache the device's time zone. `touch -t` takes local device time, so
+        // an incorrect zone shifts every preserved mtime by hours.
         if let offsetText = try? await shell("date +%z", timeout: .seconds(10)) {
             deviceTimeZone = ADBTransport.timeZone(fromOffset: offsetText) ?? deviceTimeZone
         }
@@ -124,8 +124,8 @@ public actor ADBTransport: DeviceTransport {
     }
 
     public func disconnect() async {
-        // adb's daemon is shared with anything else on the Mac using it, so we
-        // deliberately do not kill the server here.
+        // Intentionally does not kill the adb server: the daemon is shared with
+        // any other process on the Mac using it.
     }
 
     public func currentDevice() async throws -> Device {
@@ -166,8 +166,8 @@ public actor ADBTransport: DeviceTransport {
     public func volumes() async throws -> [StorageVolume] {
         var volumes: [StorageVolume] = []
 
-        // Internal storage. /sdcard is a symlink chain that lands here; using the
-        // real path avoids the loops that trip up a recursive walk.
+        // Internal storage. /sdcard is a symlink chain ending here; using the
+        // real path avoids the loops that break a recursive walk.
         let internalRoot = RemotePath("/storage/emulated/0")
         if try await stat(internalRoot) != nil {
             volumes.append(try await makeVolume(id: "emulated", name: "Internal storage",
@@ -190,8 +190,7 @@ public actor ADBTransport: DeviceTransport {
                 ))
             }
         }
-        // Two cards can both be called "SD card"; the sidebar must still tell
-        // them apart.
+        // Two cards can both report the name "SD card".
         return volumes.disambiguated()
     }
 
@@ -206,19 +205,17 @@ public actor ADBTransport: DeviceTransport {
             freeBytes: free?.availableBytes,
             isRemovable: removable,
             filesystem: filesystem,
-            // adb reads the real statfs, so these numbers are as good as the
-            // kernel's.
+            // adb reads the real statfs, so these figures come from the kernel.
             freeSpaceIsTrustworthy: true
         )
     }
 
-    /// Works out what a volume is really formatted as.
+    /// Determines what a volume is actually formatted as.
     ///
-    /// Android hands user storage to us through a FUSE layer, so `stat -f` says
-    /// "fuse" no matter what is underneath. That is useless for the only
-    /// question this answer feeds: whether a file over 4 GiB will fit. So when
-    /// the direct answer is FUSE we look through it with `mount`, which names
-    /// the backing filesystem.
+    /// Android presents user storage through a FUSE layer, so `stat -f` reports
+    /// "fuse" whatever lies underneath. When the direct answer is FUSE, fall
+    /// back to `mount`, which names the backing filesystem and so determines
+    /// whether a file over 4 GiB will fit.
     private func detectFilesystem(at path: RemotePath) async -> StorageVolume.Filesystem {
         var direct = StorageVolume.Filesystem.unknown
         if let type = try? await shell("stat -f -c %T \(path.shellQuoted) 2>/dev/null"), !type.isEmpty {
@@ -235,14 +232,14 @@ public actor ADBTransport: DeviceTransport {
         return direct
     }
 
-    /// Where to look for the filesystem that a FUSE-presented volume really
-    /// lives on, most specific first.
+    /// Paths to check for the filesystem backing a FUSE-presented volume, most
+    /// specific first.
     ///
-    /// Android's storage paths are a presentation layer. `/storage/emulated/0`
-    /// is the current user's slice of `/data/media`, and a memory card mounted
-    /// at `/storage/1A2B-3C4D` is really at `/mnt/media_rw/1A2B-3C4D`. Those two
-    /// rules are what let us tell a card formatted FAT32 (4 GiB per file, hard
-    /// limit) from internal storage on F2FS (no such limit).
+    /// Android's storage paths are a presentation layer: `/storage/emulated/0`
+    /// is the current user's slice of `/data/media`, and a card mounted at
+    /// `/storage/1A2B-3C4D` lives at `/mnt/media_rw/1A2B-3C4D`. These two rules
+    /// distinguish a FAT32 card, with its 4 GiB per-file limit, from internal
+    /// storage on F2FS.
     static func backingPaths(for path: RemotePath) -> [String] {
         let components = path.components
         if components.count >= 3, components[0] == "storage", components[1] == "emulated" {
@@ -255,14 +252,14 @@ public actor ADBTransport: DeviceTransport {
     }
 
     public func list(_ path: RemotePath) async throws -> [RemoteFile] {
-        // Primary: one `stat` per entry in a single round trip, with second-level
-        // mtimes we can actually preserve.
+        // Primary path: one `stat` per entry in a single round trip, with
+        // second-granular mtimes that can be preserved.
         let statCommand = "find \(path.shellQuoted) -maxdepth 1 -mindepth 1 -exec stat -c '%f|%s|%Y|%n' {} + 2>/dev/null"
         if let output = try? await shell(statCommand, timeout: .seconds(60)) {
             let files = ADBParsing.parseStatRecords(output)
             if !files.isEmpty { return files.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } }
-            // An empty result is ambiguous: an empty directory, or a ROM without
-            // `find`/`stat`. Confirm with the fallback before believing it.
+            // An empty result is ambiguous: an empty directory, or a ROM with
+            // no `find`/`stat`. Confirm with the fallback before accepting it.
         }
 
         let listing = try await shell("ls -la \(path.shellQuoted)", timeout: .seconds(60))
@@ -284,8 +281,8 @@ public actor ADBTransport: DeviceTransport {
     }
 
     public func remove(_ path: RemotePath, recursive: Bool) async throws {
-        // No `-f`: a delete that silently succeeds on a path that does not exist
-        // hides bugs, and this is the destructive operation.
+        // No `-f`, so deleting a path that does not exist reports an error
+        // rather than succeeding silently.
         let command = recursive ? "rm -r \(path.shellQuoted)" : "rm \(path.shellQuoted)"
         let result = try await adb(["shell", command], timeout: .seconds(120))
         guard result.succeeded, result.stderrText.isEmpty else {
@@ -323,30 +320,28 @@ public actor ADBTransport: DeviceTransport {
             command = "cat \(path.shellQuoted)"
         } else if range.offset % TransferChunk.blockSize == 0 {
             // Block-aligned by construction, so plain `skip=` works on every
-            // toybox build; no `iflag=skip_bytes` required.
+            // toybox build and `iflag=skip_bytes` is not needed.
             let blocks = range.offset / TransferChunk.blockSize
             command = "dd if=\(path.shellQuoted) bs=\(TransferChunk.blockSize) skip=\(blocks) 2>/dev/null"
         } else {
-            // Unaligned resume: `tail -c +N` is 1-indexed and seeks rather than
-            // scanning, so it stays cheap on a multi-gigabyte file.
+            // Unaligned resume. `tail -c +N` is 1-indexed and seeks rather
+            // than scans, so it stays cheap on a multi-gigabyte file.
             command = "tail -c +\(range.offset + 1) \(path.shellQuoted)"
         }
 
-        // `exec-out` is the binary-safe channel; `adb shell` may translate
-        // newlines on older devices and would silently corrupt every file.
+        // `exec-out` is the binary-safe channel. `adb shell` translates
+        // newlines on older devices, which corrupts every file.
         return ProcessRunner.stream(executable: adbURL, arguments: ["-s", serial, "exec-out", command])
     }
 
-    /// The fast path for a fresh copy: hand the whole file to `adb pull`.
+    /// Bulk path for a fresh copy, delegating to `adb pull`.
     ///
-    /// Roughly 2.4x the throughput of streaming it through `exec-out`, measured
-    /// on real hardware. The destination is the engine's `.porterpart` sidecar, so
-    /// the guarantee that a partial copy never occupies the final name still
-    /// holds, and the file is still checksum-verified afterwards.
+    /// Measured at roughly 2.4x the throughput of streaming through `exec-out`.
+    /// The destination is the engine's `.porterpart` sidecar and the result is
+    /// still checksum-verified, so the engine's guarantees are unchanged.
     ///
-    /// adb only draws a progress bar when stdout is a terminal, so progress
-    /// comes from watching the local file grow - which is a real byte count and
-    /// costs nothing on the device.
+    /// adb draws a progress bar only when stdout is a terminal, so progress is
+    /// derived from the local file's growing size instead.
     public func fastPull(
         _ path: RemotePath,
         to localURL: URL,
@@ -375,10 +370,9 @@ public actor ADBTransport: DeviceTransport {
         }
         defer { poller.cancel() }
 
-        // Awaiting an unstructured task's `value` is not itself cancellable, so
-        // without this handler a paused transfer would sit here until `adb pull`
-        // finished the whole file - which for a 4 GB video means Pause does
-        // nothing for a minute. Forwarding the cancellation terminates adb.
+        // Awaiting an unstructured task's `value` is not itself cancellable.
+        // Without this handler, a pause would block here until `adb pull`
+        // finished the whole file; forwarding the cancellation terminates adb.
         let result = try await withTaskCancellationHandler {
             try await pullTask.value
         } onCancel: {
@@ -411,12 +405,11 @@ public actor ADBTransport: DeviceTransport {
         }
     }
 
-    /// Fresh copy: hand the whole job to `adb push`, which is the fastest path
-    /// available and already handles large files well.
+    /// Bulk path for a fresh copy, delegating to `adb push`.
     ///
-    /// adb only prints progress when stdout is a terminal, so we poll the
-    /// destination's size instead. That costs one cheap shell round trip per
-    /// tick and gives a real byte count rather than an animation.
+    /// adb prints progress only when stdout is a terminal, so the destination's
+    /// size is polled instead: one cheap shell round trip per tick, for a real
+    /// byte count.
     private func push(localURL: URL, to path: RemotePath, progress: @escaping @Sendable (Int64) -> Void) async throws {
         let pushTask = Task { [adbURL, serial] in
             try await ProcessRunner.run(
@@ -460,13 +453,12 @@ public actor ADBTransport: DeviceTransport {
         }
     }
 
-    /// Resume: stream only the bytes that are missing, straight into `cat >>`.
+    /// Resume path: streams only the missing bytes into `cat >>`.
     ///
     /// The local file is opened and seeked, so nothing is staged to a temporary
-    /// copy on either side. The engine verifies the result with a device-side
-    /// checksum afterwards, which is what makes this safe on older ROMs where
-    /// `adb shell` stdin is not guaranteed byte-clean: a mangled append fails
-    /// verification and the item restarts from zero rather than being kept.
+    /// copy on either side. `adb shell` stdin is not guaranteed byte-clean on
+    /// older ROMs, but the engine's device-side checksum catches a mangled
+    /// append and restarts the item from zero.
     private func appendRemainder(of localURL: URL, to path: RemotePath, from offset: Int64,
                                  progress: @escaping @Sendable (Int64) -> Void) async throws {
         let handle = try FileHandle(forReadingFrom: localURL)
@@ -513,27 +505,26 @@ public actor ADBTransport: DeviceTransport {
 
     public func checksum(_ path: RemotePath, algorithm: ChecksumAlgorithm) async throws -> Checksum? {
         if !didProbeChecksumTool {
-            // Only a definitive answer is cached. An interrupted probe must not
-            // be remembered as "this device cannot hash files" - that would
-            // silently disable verification for the rest of the session, which
-            // is the one failure this app must never have.
+            // Only a definitive answer is cached. Recording an interrupted
+            // probe as "no hashing tool" would disable verification for the
+            // rest of the session.
             checksumTool = try await probeChecksumTool()
             didProbeChecksumTool = true
         }
         guard let tool = checksumTool else { return nil }
-        // Honour the caller's choice when the device can do it, otherwise use
-        // whatever the device has and let the caller compare like with like.
+        // Use the requested algorithm when the device supports it, otherwise
+        // fall back to what it has; the returned checksum names the algorithm.
         let effective = (tool == algorithm) ? algorithm : tool
-        // Hashing 20 GB on a phone is slow; no timeout, cancellation still applies.
+        // Hashing a large file on a phone is slow, so no timeout. Cancellation
+        // still applies.
         let output = try await shell("\(effective.deviceCommand) \(path.shellQuoted)", timeout: nil)
         return ChecksumService.parseSumOutput(output, algorithm: effective)
     }
 
     /// Finds a hashing tool on the device.
     ///
-    /// Rethrows cancellation so the caller can tell "this ROM has no
-    /// `sha256sum`" apart from "we were interrupted before we could find out".
-    /// Those two must not be recorded the same way.
+    /// Rethrows cancellation so the caller can distinguish a ROM with no
+    /// `sha256sum` from a probe that was interrupted.
     private func probeChecksumTool() async throws -> ChecksumAlgorithm? {
         for algorithm in [ChecksumAlgorithm.sha256, .md5] {
             do {
@@ -553,8 +544,8 @@ public actor ADBTransport: DeviceTransport {
     public func truncate(_ path: RemotePath, to length: Int64) async throws {
         let result = try await adb(["shell", "truncate -s \(length) \(path.shellQuoted)"], timeout: .seconds(30))
         guard result.succeeded, result.stderrText.isEmpty else {
-            // Some minimal ROMs ship a toybox without `truncate`. Say so plainly
-            // so the engine can fall back to restarting the file.
+            // Some minimal ROMs ship a toybox without `truncate`. Report it as
+            // unsupported so the engine falls back to restarting the file.
             throw TransferError.unsupported(operation: "Trimming a partial file", transport: .adb)
         }
         let landed = try await remoteSize(of: path)
@@ -564,7 +555,7 @@ public actor ADBTransport: DeviceTransport {
     }
 
     public func setModificationDate(_ date: Date, at path: RemotePath) async throws {
-        // POSIX `touch -t [[CC]YY]MMDDhhmm[.ss]`, in the *device's* local time.
+        // POSIX `touch -t [[CC]YY]MMDDhhmm[.ss]`, in the device's local time.
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = deviceTimeZone

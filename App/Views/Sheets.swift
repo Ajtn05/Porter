@@ -65,8 +65,7 @@ struct ConflictSheet: View {
                 }
             }
 
-            // Both sides shown side by side: Replace is destructive, and the
-            // user needs the facts to tell which copy is the one they want.
+            // Replace is destructive, so show both files side by side.
             HStack(spacing: 0) {
                 fileColumn(title: "Copying", size: conflict.context.sourceSize,
                            date: conflict.context.sourceModified,

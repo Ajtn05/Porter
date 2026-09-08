@@ -2,11 +2,10 @@ import PorterKit
 import Observation
 import SwiftUI
 
-/// The app's single source of truth.
+/// Observable state backing every view in the app.
 ///
-/// Deliberately thin: discovery, transfer, and every rule about what is safe to
-/// copy live in `PorterKit`, which has no idea SwiftUI exists. This
-/// object turns those into things a view can bind to.
+/// Discovery, transfer, and validation live in `PorterKit`, which does not
+/// depend on SwiftUI. This type adapts them into bindable state.
 @MainActor
 @Observable
 final class AppModel {
@@ -60,8 +59,8 @@ final class AppModel {
         self.engine = TransferEngine(queue: queue, resolver: coordinator)
     }
 
-    /// Lets the transfer extension in the neighbouring file refresh the list
-    /// without opening the setter to everything.
+    /// Replaces the item list. Exists because `transferItems` is `private(set)`
+    /// and the transfer extension lives in another file.
     func replaceTransferItems(_ items: [TransferItem]) {
         transferItems = items
     }
@@ -105,8 +104,8 @@ final class AppModel {
     private func apply(devices: [Device]) {
         self.devices = devices
 
-        // Auto-select the first device that can actually be browsed. The user
-        // plugged in a phone; making them also click it is friction for nothing.
+        // Auto-select the first browsable device so plugging in a phone is
+        // enough to start browsing.
         if let current = selectedDeviceID, devices.contains(where: { $0.id == current }) {
             if selectedDevice?.readiness.isBrowsable == true && volumes.isEmpty {
                 Task { await loadVolumes() }
@@ -130,7 +129,7 @@ final class AppModel {
             } else {
                 transferItems.append(item)
             }
-            // A finished copy changes what is on disk; keep the panes truthful.
+            // A completed copy changes the destination, so refresh that pane.
             if item.state == .completed {
                 switch item.direction {
                 case .pull: refreshLocalPane()
@@ -163,10 +162,8 @@ final class AppModel {
             volumes = []
             return
         }
-        // Enumerating volumes asks the device several questions - including
-        // reading `mount` to see through the FUSE layer - and takes a second or
-        // two. Without this the pane just sits there looking empty, which reads
-        // as "there is nothing on your phone".
+        // Enumeration costs several device round trips, including reading
+        // `mount` to see through the FUSE layer, so it needs a loading state.
         isLoadingDevice = true
         defer { isLoadingDevice = false }
         do {
@@ -204,8 +201,8 @@ final class AppModel {
             deviceError = nil
         } catch {
             deviceError = describe(error)
-            // A stall usually means the screen locked mid-request; drop the
-            // transport so the retry reconnects rather than reusing a dead one.
+            // A transient failure usually means the screen locked mid-request.
+            // Drop the transport so a retry reconnects instead of reusing it.
             if (error as? TransferError)?.isTransient == true {
                 await coordinator.invalidateTransport(for: device.id)
             }

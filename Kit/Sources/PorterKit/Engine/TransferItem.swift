@@ -10,13 +10,13 @@ public enum TransferDirection: String, Sendable, Codable {
 public enum TransferState: String, Sendable, Codable {
     case queued
     case running
-    /// All bytes moved; comparing checksums before the file is put in place.
+    /// All bytes moved; checksums are being compared before the file is placed.
     case verifying
     case paused
     case completed
     case failed
     case cancelled
-    /// The destination already had this file and the user chose Skip.
+    /// The destination already held this file and Skip was chosen.
     case skipped
 
     public var isTerminal: Bool {
@@ -31,9 +31,10 @@ public enum TransferState: String, Sendable, Codable {
     }
 }
 
-/// One file's worth of work. Directories are represented only by the files
-/// inside them, plus explicit placeholder items so an empty folder still gets
-/// created at the destination.
+/// One file's worth of work.
+///
+/// Directories are represented by the files inside them, plus a placeholder item
+/// per directory so that empty folders are still created at the destination.
 public struct TransferItem: Identifiable, Sendable, Codable, Hashable {
     public var id: UUID
     public var batchID: UUID
@@ -42,8 +43,8 @@ public struct TransferItem: Identifiable, Sendable, Codable, Hashable {
 
     public var remotePath: RemotePath
     public var localURL: URL
-    /// What the transfer drawer shows: the path relative to the dragged root,
-    /// so a deep file reads as `DCIM/Camera/IMG_0421.jpg`, not a full path.
+    /// The path relative to the dragged root, as shown in the transfer drawer:
+    /// `DCIM/Camera/IMG_0421.jpg` rather than the full path.
     public var displayPath: String
 
     public var totalBytes: Int64
@@ -53,7 +54,7 @@ public struct TransferItem: Identifiable, Sendable, Codable, Hashable {
 
     public var sourceModified: Date?
     public var conflictResolution: ConflictResolution?
-    /// Set when the destination name had to be changed to be legal there.
+    /// Set when the name was changed to be legal at the destination.
     public var sanitizationNote: String?
     public var verifiedChecksum: Checksum?
     public var errorMessage: String?
@@ -112,13 +113,11 @@ public struct TransferItem: Identifiable, Sendable, Codable, Hashable {
         direction == .pull ? remotePath.name : localURL.lastPathComponent
     }
 
-    /// Where in-flight bytes live before the file is put in place.
+    /// Suffix for the sidecar that holds in-flight bytes.
     ///
-    /// A partial copy is never allowed to occupy the final name. That is the
-    /// whole mechanism behind "a partial file never looks complete": if the
-    /// cable is pulled, what is left on disk is a `.porterpart` sidecar that the
-    /// app recognises on relaunch and no other program will mistake for the
-    /// real thing.
+    /// A partial copy never occupies the final name. An interrupted transfer
+    /// leaves a `.porterpart` file, which the app recognises on relaunch and no
+    /// other program will mistake for the finished file.
     public static let partialSuffix = ".porterpart"
 
     public var localPartialURL: URL {

@@ -1,12 +1,11 @@
 import PorterKit
 import SwiftUI
 
-/// The empty state, which is really the onboarding.
+/// Empty state that doubles as onboarding.
 ///
-/// The acceptance bar is first-run to first transfer in under a minute for
-/// someone who has never heard of USB debugging, so this screen has to teach
-/// rather than just report. It says which physical thing to change, in the
-/// wording that phone's own menus use where we can tell the manufacturer.
+/// Instead of reporting the readiness state, it names the change the user has
+/// to make on the phone, using that manufacturer's own menu wording when the
+/// manufacturer is known.
 struct ConnectionGuideView: View {
     let device: Device?
 
@@ -136,8 +135,8 @@ struct ConnectionGuideView: View {
         }
     }
 
-    /// The wording differs enough between manufacturers that a generic
-    /// instruction sends people hunting. These match what the phone actually says.
+    /// USB-mode wording varies by manufacturer, so match the label the phone
+    /// itself shows rather than giving a generic instruction.
     private var chargingOnlySteps: [String] {
         let mode: String
         switch manufacturer?.lowercased() {

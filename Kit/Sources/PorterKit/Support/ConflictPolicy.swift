@@ -5,7 +5,8 @@ public enum ConflictResolution: String, Sendable, Codable, CaseIterable, Identif
     case skip
     case replace
     case keepBoth
-    /// Resume/overwrite only when the source is newer. Used by watched-folder sync.
+    /// Resume or overwrite only when the source is newer. Used by watched-folder
+    /// sync.
     case replaceIfNewer
 
     public var id: String { rawValue }
@@ -54,14 +55,14 @@ public struct ConflictContext: Hashable, Sendable {
 
     public var sourceIsNewer: Bool {
         guard let sourceModified, let destinationModified else { return false }
-        // One-second slack: FAT stores mtimes at 2s granularity, and MTP rounds.
+        // One second of slack: FAT stores mtimes at 2s granularity, MTP rounds.
         return sourceModified.timeIntervalSince(destinationModified) > 1
     }
 }
 
 public enum ConflictNaming {
-    /// macOS-style "keep both": `photo.jpg` -> `photo 2.jpg` -> `photo 3.jpg`.
-    /// Matches Finder so the result is not surprising next to a Finder copy.
+    /// Produces Finder's "keep both" naming: `photo.jpg` -> `photo 2.jpg` ->
+    /// `photo 3.jpg`.
     public static func uniqueName(for name: String, existing: Set<String>) -> String {
         guard existing.contains(name) else { return name }
         let nsName = name as NSString
@@ -83,8 +84,8 @@ public enum ConflictNaming {
             let candidate = "\(base) \(index)\(suffix)"
             if !existing.contains(candidate) { return candidate }
             index += 1
-            // Defensive: a directory with 10k same-named files is pathological,
-            // but an unbounded loop here would hang the transfer thread.
+            // A directory with 10k same-named files is pathological, but an
+            // unbounded loop here would hang the transfer.
             if index > 10_000 { return "\(base) \(UUID().uuidString.prefix(8))\(suffix)" }
         }
     }

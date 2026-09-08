@@ -7,15 +7,14 @@ public struct DeviceID: Hashable, Sendable, Codable, CustomStringConvertible, Ex
     public var description: String { rawValue }
 }
 
-/// Which pipe we are talking to a device over. The user picks a device; this is
-/// an implementation detail we surface only as a badge.
+/// The channel a device is reached over. Surfaced in the UI only as a badge.
 public enum TransportKind: String, Sendable, Codable, CaseIterable, Comparable {
     case adb
     case mtp
     case wifi
 
-    /// Preference order when the same physical device is reachable more than one
-    /// way. ADB is both fastest and the only transport that reports honest sizes.
+    /// Preference order when one physical device is reachable more than one
+    /// way. ADB is fastest and the only transport with reliable size reporting.
     public var preferenceRank: Int {
         switch self {
         case .adb: return 0
@@ -37,23 +36,21 @@ public enum TransportKind: String, Sendable, Codable, CaseIterable, Comparable {
     }
 }
 
-/// What the device is currently able to do for us.
+/// What a device is currently able to do.
 ///
-/// These map one-to-one onto the support questions in the spec: the point of
-/// having distinct cases is that the UI can say exactly what is wrong instead of
-/// showing an empty file list.
+/// The cases are kept distinct so the UI can name the specific blocker rather
+/// than showing an empty file list.
 public enum DeviceReadiness: Sendable, Codable, Hashable {
     /// Browsable and writable.
     case ready
-    /// Present on the USB bus, but exposing no storage interface. Almost always
+    /// Present on the USB bus but exposing no storage interface. Almost always
     /// "USB mode: charging only" on the phone.
     case chargingOnly
-    /// ADB sees it but the RSA fingerprint has not been accepted on the phone.
+    /// Visible to ADB, but the RSA fingerprint has not been accepted on the phone.
     case unauthorized
-    /// MTP enumerated the device but the screen is locked, so it will stall on
-    /// any real transfer.
+    /// Enumerated over MTP, but the screen is locked, so transfers will stall.
     case locked
-    /// Known to us but not currently reachable.
+    /// Previously seen, but not currently reachable.
     case offline
 
     public var isBrowsable: Bool { self == .ready }
@@ -67,8 +64,8 @@ public struct USBDescriptor: Hashable, Sendable, Codable {
     public var productName: String?
     public var serialNumber: String?
     public var locationID: Int
-    /// The interfaces the device is currently publishing. This is what tells us
-    /// "charging only" apart from "file transfer".
+    /// The interfaces the device currently publishes. Distinguishes charge-only
+    /// from file transfer.
     public var interfaces: [USBInterface]
 
     public init(vendorID: Int, productID: Int, vendorName: String? = nil, productName: String? = nil,
@@ -108,8 +105,8 @@ public struct USBInterface: Hashable, Sendable, Codable {
         interfaceClass == 255 && interfaceSubclass == 66 && interfaceProtocol == 1
     }
 
-    /// The "charging only" giveaway: the phone publishes nothing but the
-    /// mandatory control interface, or only vendor interfaces we can't use.
+    /// False when the device publishes only the mandatory control interface or
+    /// unusable vendor interfaces, which is the charge-only case.
     public var isStorageCapable: Bool { isMTP || isADB }
 }
 
@@ -123,7 +120,7 @@ public struct Device: Identifiable, Hashable, Sendable, Codable {
     public var transport: TransportKind
     public var readiness: DeviceReadiness
     public var usb: USBDescriptor?
-    /// For Wi-Fi devices, the resolved host we reached them on.
+    /// For Wi-Fi devices, the resolved host the device was reached on.
     public var endpointHost: String?
     public var lastSeen: Date
 

@@ -45,8 +45,8 @@ struct ADBParsingTests {
 
     @Test("A filename containing a newline stays one entry")
     func statRecordWithNewlineInName() {
-        // Legal on Android, and it would otherwise split one file into two
-        // bogus entries and copy neither correctly.
+        // Newlines are legal in Android filenames, and would otherwise split
+        // one file into two bogus entries.
         let output = "81b0|10|1713900000|/sdcard/two\nline.txt\n81b0|20|1713900000|/sdcard/after.txt"
         let files = ADBParsing.parseStatRecords(output)
         #expect(files.count == 2)
@@ -56,9 +56,9 @@ struct ADBParsingTests {
 
     @Test("The trailing newline of the output is not glued onto the last name")
     func statRecordsIgnoreTrailingNewline() {
-        // Found on a real Galaxy S22: every listing ended with a directory whose
-        // name carried a stray "\n", so browsing into it looked for a path that
-        // did not exist.
+        // Regression, seen on a Galaxy S22: every listing ended with a
+        // directory whose name carried a stray "\n", so browsing into it looked
+        // for a path that did not exist.
         let output = "41ed|4096|1714003200|/sdcard/DCIM/june\n41ed|4096|1714003200|/sdcard/DCIM/july\n"
         let files = ADBParsing.parseStatRecords(output)
         #expect(files.count == 2)
@@ -76,7 +76,7 @@ struct ADBParsingTests {
 
     @Test("Reads toybox's hex superblock magic as well as a name")
     func filesystemMagics() {
-        // Android's toybox prints the raw magic; GNU coreutils prints a name.
+        // toybox prints the raw magic; GNU coreutils prints a name.
         #expect(ADBParsing.filesystem(fromStatType: "0x65735546") == .fuse)
         #expect(ADBParsing.filesystem(fromStatType: "0xf2f52010") == .f2fs)
         #expect(ADBParsing.filesystem(fromStatType: "0xef53") == .ext4)
@@ -92,9 +92,9 @@ struct ADBParsingTests {
         /dev/fuse on /storage/emulated type fuse (rw,nosuid)
         /dev/block/vold/public:179,65 on /mnt/media_rw/1A2B-3C4D type exfat (rw)
         """
-        // Internal storage: the FUSE mount is ignored, /data answers.
+        // Internal storage: the FUSE mount is skipped and /data answers.
         #expect(ADBParsing.backingFilesystem(fromMountOutput: mounts, forPath: "/data/media/0") == .f2fs)
-        // A card: whatever it is actually formatted as, which decides the 4 GiB limit.
+        // A card resolves to its real format, which sets the per-file limit.
         #expect(ADBParsing.backingFilesystem(fromMountOutput: mounts, forPath: "/mnt/media_rw/1A2B-3C4D") == .exfat)
         #expect(ADBParsing.backingFilesystem(fromMountOutput: mounts, forPath: "/nowhere") == .unknown)
     }
@@ -136,7 +136,7 @@ struct ADBParsingTests {
         Filesystem     1K-blocks     Used Available Use% Mounted on
         /dev/block/dm-5 112000000 40000000  72000000  36% /storage/emulated
         """
-        // Unwrapped rather than compared through the optional: see
+        // Unwrapped rather than compared through the optional. See
         // Docs/testing-notes.md for why `#expect(optionalInt64 == someInt)`
         // reports a mismatch between two equal numbers.
         let free = try #require(ADBParsing.parseDiskFree(output))
@@ -210,11 +210,12 @@ struct RemotePathTests {
 
     @Test("Quotes for the shell, including embedded quotes")
     func shellQuoting() {
-        // A file genuinely called  it's a "test"; rm -rf ~  must be passed to
-        // the device's shell as data, never as syntax.
+        // A file named  it's a "test"; rm -rf ~  must reach the device's shell
+        // as data, never as syntax.
         let path = RemotePath("/sdcard/it's a \"test\"; rm -rf ~")
         #expect(path.shellQuoted == "'/sdcard/it'\\''s a \"test\"; rm -rf ~'")
-        // The dangerous substring is inside quotes, so the shell cannot act on it.
+        // The dangerous substring stays inside quotes, so the shell cannot act
+        // on it.
         #expect(path.shellQuoted.hasPrefix("'"))
         #expect(path.shellQuoted.hasSuffix("'"))
         #expect("$(reboot)".shellQuoted == "'$(reboot)'")

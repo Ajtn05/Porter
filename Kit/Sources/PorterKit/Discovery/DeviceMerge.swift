@@ -1,12 +1,11 @@
 import Foundation
 
-/// Combines what each discovery source knows into the single list the user sees.
+/// Combines the discovery sources into a single device list.
 ///
-/// Pure and separately testable, because the interesting behaviour lives here:
-/// one physical phone can appear on the USB bus, in `adb devices`, and over
-/// Bonjour all at once, and it must show up as one row with the best available
-/// transport — while a phone that appears *only* on the bus has to be recognised
-/// as charge-only rather than quietly dropped.
+/// One physical phone can appear on the USB bus, in `adb devices`, and over
+/// Bonjour at once; it must collapse to one entry using the best available
+/// transport. A phone that appears only on the bus must still be reported, as
+/// charge-only, rather than dropped. Kept pure so it can be tested directly.
 public enum DeviceMerge {
 
     public struct WirelessDevice: Hashable, Sendable {
@@ -34,7 +33,7 @@ public enum DeviceMerge {
         var devices: [Device] = []
         var claimedSerials: Set<String> = []
 
-        // 1. ADB first: it is the best transport, so anything it can see wins.
+        // 1. ADB first: it is the preferred transport, so its view wins.
         for listing in adb where !listing.isWireless {
             let usbMatch = usb.first { $0.descriptor.serialNumber == listing.serial }
             claimedSerials.insert(listing.serial)
@@ -51,10 +50,9 @@ public enum DeviceMerge {
             ))
         }
 
-        // 2. Wired devices adb cannot see. Either MTP is available, or the phone
-        //    is on the bus with no storage interface at all — which is the
-        //    charge-only case, and the whole reason this list is merged rather
-        //    than taken from adb alone.
+        // 2. Wired devices adb cannot see: either MTP is available, or the
+        //    phone is on the bus exposing no storage interface, which is the
+        //    charge-only case.
         for snapshot in usb {
             let serial = snapshot.descriptor.serialNumber
             if let serial, claimedSerials.contains(serial) { continue }
@@ -74,8 +72,7 @@ public enum DeviceMerge {
             if let serial { claimedSerials.insert(serial) }
         }
 
-        // 3. Wi-Fi, but only for devices not already reachable over a cable:
-        //    the user picked a phone, and we should silently use the fast pipe.
+        // 3. Wi-Fi, only for devices not already reachable over a cable.
         for device in wireless {
             if let serial = device.serial, claimedSerials.contains(serial) { continue }
             devices.append(Device(
@@ -90,8 +87,8 @@ public enum DeviceMerge {
             ))
         }
 
-        // Ready devices first, then by name, so the list does not jump around
-        // as transports come and go.
+        // Ready devices first, then by name, so the list is stable as
+        // transports come and go.
         return devices.sorted { lhs, rhs in
             if lhs.readiness.isBrowsable != rhs.readiness.isBrowsable {
                 return lhs.readiness.isBrowsable
