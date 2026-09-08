@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A second push to the same branch makes the first run's answer worthless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kit-tests:
+    name: PorterKit tests
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Select Xcode
+        run: |
+          latest=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          echo "Using $latest"
+          sudo xcode-select -s "$latest"
+          xcodebuild -version
+          swift --version
+
+      # Builds PorterKit and porterctl. `swift test` alone would never compile
+      # the CLI, so a break in porterctl would go unnoticed.
+      - name: Build
+        working-directory: Kit
+        run: swift build
+
+      - name: Test
+        working-directory: Kit
+        run: swift test
+
+  app-build:
+    name: App build
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Select Xcode
+        run: |
+          latest=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          echo "Using $latest"
+          sudo xcode-select -s "$latest"
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      # Porter.xcodeproj is not committed; project.yml is the source of truth.
+      - name: Generate Porter.xcodeproj
+        run: xcodegen generate
+
+      # No signing identity on a runner, so signing is turned off and the
+      # DEVELOPMENT_TEAM from project.yml is cleared. This checks that App/
+      # compiles; it does not produce a shippable build.
+      - name: Build Porter.app
+        run: |
+          xcodebuild build \
+            -project Porter.xcodeproj \
+            -scheme Porter \
+            -configuration Debug \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath DerivedData \
+            -quiet \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM=""
