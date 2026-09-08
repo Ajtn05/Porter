@@ -1,11 +1,14 @@
+<div align="center">
+<img src="Branding/porter-icon.svg" width=256>
+
 # Porter
 
 A free, native macOS app for moving files to and from an Android phone, over a
 cable or over Wi-Fi
 
-
 Google discontinued Android File Transfer in May 2024 and most alternatives are either paid, bloated, or look outdated. This aims to replace all that. With this service, the phone behaves like a drive with  transfers
 resuming when connection is interrupted, and every file is checksum-verified.
+</div>
 
 ## Status
 
