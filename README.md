@@ -51,7 +51,7 @@ Kit/                    Swift package - all the logic, no UI
     Discovery/          USB bus watching and device merging
     Support/            Checksums, sanitising, throughput
   Sources/porterctl/       Read-only diagnostic CLI
-  Tests/                74 tests
+  Tests/                66 tests
 App/                    The SwiftUI app
 project.yml             XcodeGen input; generates Porter.xcodeproj
 ```
