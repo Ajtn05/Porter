@@ -1,0 +1,85 @@
+# ---- macOS ----
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# ---- Build output ----
+.build/
+DerivedData/
+build/
+*.o
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM
+*.dSYM.zip
+
+# ---- Xcode project ----
+# The .xcodeproj is generated from project.yml by XcodeGen and is not the
+# source of truth. Committing it means every regeneration is a huge diff and
+# two people can disagree about which one is real. Run `xcodegen generate`.
+Porter.xcodeproj/
+
+# Per-user editor state: window positions, breakpoints, which file you had open.
+# Nothing another developer wants, and it changes on every launch.
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+.swiftpm/xcode/
+
+# ---- Swift Package Manager ----
+# Package.resolved is deliberately NOT ignored. There are no external
+# dependencies today, but if any are added it should be committed so everyone
+# builds the same versions.
+.swiftpm/configuration
+Packages/
+
+# ---- Bundled adb ----
+# Scripts/fetch-platform-tools.sh downloads this from Google at packaging time.
+# It is a ~19 MB third-party binary with its own licence and its own release
+# cadence: fetch it, do not vendor it into the history.
+App/Resources/platform-tools/
+Vendor/platform-tools/
+
+# ---- Signing and secrets ----
+# A leaked signing identity lets someone ship malware as you. None of this
+# belongs in a public repository, ever.
+*.p12
+*.pfx
+*.cer
+*.certSigningRequest
+*.mobileprovision
+*.provisionprofile
+*.jks
+*.keystore
+ExportOptions.plist
+.env
+.env.*
+!.env.example
+notarization-*.json
+
+# ---- Android companion app (Phase 2) ----
+Android/.gradle/
+Android/build/
+Android/app/build/
+Android/local.properties
+Android/captures/
+*.apk
+*.aab
+
+# ---- This app's own runtime files ----
+# In-flight transfer sidecars. They only appear inside a copy destination, but
+# if someone ever points one at a checkout, a half-copied 4 GB video should not
+# become a commit.
+*.porterpart
+
+# ---- Editors ----
+.idea/
+.vscode/
+*.swp
+
+# ---- Logs and scratch ----
+*.log
+Docs/

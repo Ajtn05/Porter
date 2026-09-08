@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      The App Sandbox is deliberately off.
+
+      The fast transport works by running `adb`, and a sandboxed process may not
+      spawn an arbitrary child executable or talk to USB devices directly. The
+      app is distributed outside the Mac App Store, signed with a Developer ID
+      and notarised, with the Hardened Runtime on. The exceptions below are the
+      minimum the Hardened Runtime needs to launch the bundled adb binary.
+    -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <false/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.device.usb</key>
+    <true/>
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
+</dict>
+</plist>

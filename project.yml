@@ -1,0 +1,63 @@
+name: Porter
+options:
+  bundleIdPrefix: app.porter
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+packages:
+  PorterKit:
+    path: Kit
+
+settings:
+  base:
+    DEVELOPMENT_TEAM: R8P2P2R3S4
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    ENABLE_HARDENED_RUNTIME: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    DEAD_CODE_STRIPPING: YES
+  configs:
+    Debug:
+      ONLY_ACTIVE_ARCH: YES
+    Release:
+      # Universal, so the shipped build is native on Apple silicon and Intel.
+      ARCHS: "$(ARCHS_STANDARD)"
+      ONLY_ACTIVE_ARCH: NO
+
+targets:
+  Porter:
+    type: application
+    platform: macOS
+    sources:
+      - path: App
+        excludes:
+          - "Resources/Info.plist"
+          - "Resources/*.entitlements"
+    dependencies:
+      - package: PorterKit
+        product: PorterKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.porter.mac
+        PRODUCT_NAME: Porter
+        INFOPLIST_FILE: App/Resources/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_ENTITLEMENTS: App/Resources/Porter.entitlements
+        CODE_SIGN_STYLE: Automatic
+        COMBINE_HIDPI_IMAGES: YES
+        ENABLE_PREVIEWS: YES
+        SWIFT_EMIT_LOC_STRINGS: YES
+
+schemes:
+  Porter:
+    build:
+      targets:
+        Porter: all
+    run:
+      config: Debug
+    archive:
+      config: Release
