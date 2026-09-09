@@ -11,8 +11,21 @@ struct PorterApp: App {
             ContentView()
                 .environment(model)
                 .task { model.start() }
-                .frame(minWidth: 860, minHeight: 540)
+                // Height only. A minWidth here lands on the split view's
+                // detail column rather than on the window, so the sidebar's
+                // width is added on top of it and the total always exceeds the
+                // window by however wide the sidebar is. The width minimum
+                // belongs to the columns themselves: the sidebar declares it in
+                // ContentView, and each pane in DualPaneBrowser.
+                .frame(minHeight: 540)
         }
+        // The column minimums are only a hint until this is set. A Window scene
+        // defaults to .automatic resizability, which lets the window be dragged
+        // narrower than its content needs, and SwiftUI then centres and clips
+        // rather than compressing: the sidebar slides off the left edge while
+        // the transfer drawer's buttons run off the right.
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 1180, height: 720)
         .windowToolbarStyle(.unified)
         .commands { PorterCommands(model: model) }
 
