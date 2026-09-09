@@ -1,6 +1,67 @@
 import PorterKit
 import SwiftUI
 
+struct WiFiPairingSheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var host = ""
+    @State private var code = ""
+    @State private var fingerprint = ""
+
+    var body: some View {
+        @Bindable var model = model
+
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Pair Wi-Fi Phone")
+                .font(.title2.weight(.semibold))
+            Text("Open Porter Companion on the phone, start sharing, then enter its local address, six-digit code, and certificate fingerprint.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            TextField("Phone address", text: $host, prompt: Text("192.168.1.42"))
+                .textFieldStyle(.roundedBorder)
+                .disabled(model.isPairingWiFi)
+            TextField("Six-digit code", text: $code)
+                .textFieldStyle(.roundedBorder)
+                .monospacedDigit()
+                .onChange(of: code) { _, value in
+                    code = String(value.filter(\.isNumber).prefix(6))
+                }
+                .disabled(model.isPairingWiFi)
+            TextField("Certificate fingerprint", text: $fingerprint, prompt: Text("64-character SHA-256"))
+                .textFieldStyle(.roundedBorder)
+                .fontDesign(.monospaced)
+                .onChange(of: fingerprint) { _, value in
+                    fingerprint = String(value.lowercased().filter(\.isHexDigit).prefix(64))
+                }
+                .disabled(model.isPairingWiFi)
+            Text("Copy the fingerprint exactly from the companion. It prevents a different device on the network from being paired.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if let error = model.wifiPairingError {
+                Text(error)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+            }
+
+            HStack {
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(model.isPairingWiFi)
+                Spacer()
+                Button(model.isPairingWiFi ? "Pairing…" : "Pair") {
+                    model.pairWiFiPhone(host: host, code: code, fingerprint: fingerprint)
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || code.count != 6 || fingerprint.count != 64 || model.isPairingWiFi)
+            }
+        }
+        .padding(24)
+        .frame(width: 460)
+    }
+}
+
 struct RenameSheet: View {
     var title: String = "Rename"
     let currentName: String

@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Porter Developer Guide</title>
+  <style>
+    @page { size: A4; margin: 16mm 15mm 17mm; }
+    :root {
+      color: #18242b;
+      background: #fbfcfd;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 10.3pt;
+      line-height: 1.48;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0 auto; max-width: 940px; padding: 34px 42px 64px; }
+    header {
+      background: linear-gradient(135deg, #083344, #0f766e);
+      border-radius: 18px;
+      color: #f8fafc;
+      padding: 44px 48px 38px;
+      margin-bottom: 34px;
+    }
+    h1, h2, h3 { color: #0f3e4a; line-height: 1.15; }
+    header h1 { color: white; font-size: 34pt; letter-spacing: -1.2px; margin: 0 0 12px; }
+    header p { font-size: 13pt; max-width: 670px; margin: 0; }
+    h2 { border-bottom: 2px solid #b7e4dd; font-size: 21pt; margin: 42px 0 16px; padding-bottom: 8px; }
+    h3 { color: #126e66; font-size: 13pt; margin: 26px 0 8px; }
+    p, li { max-width: 78ch; }
+    a { color: #056b73; }
+    code {
+      background: #e9f2f3;
+      border-radius: 4px;
+      color: #16424a;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: .9em;
+      padding: .08em .28em;
+    }
+    pre {
+      background: #102b33;
+      border-radius: 9px;
+      color: #e7f8f5;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 8.8pt;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+      padding: 16px 18px;
+      white-space: pre-wrap;
+    }
+    table { border-collapse: collapse; margin: 15px 0 23px; width: 100%; }
+    th { background: #d9f3ee; color: #16424a; text-align: left; }
+    th, td { border: 1px solid #bfdbd8; padding: 8px 9px; vertical-align: top; }
+    .kicker { color: #a7f3d0; font-size: 9pt; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+    .lede { font-size: 12pt; }
+    .callout {
+      background: #edf8f6;
+      border-left: 5px solid #159884;
+      border-radius: 6px;
+      margin: 18px 0;
+      padding: 13px 16px;
+    }
+    .warning {
+      background: #fff8e8;
+      border-left-color: #d38b18;
+    }
+    .diagram {
+      background: #f0f8f8;
+      border: 1px solid #bfdbd8;
+      border-radius: 10px;
+      color: #16424a;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 8.8pt;
+      line-height: 1.35;
+      padding: 20px;
+      white-space: pre-wrap;
+    }
+    .status { border-radius: 999px; display: inline-block; font-size: 8.5pt; font-weight: 700; padding: 2px 8px; white-space: nowrap; }
+    .done { background: #ccefe5; color: #075c50; }
+    .pending { background: #fff0c9; color: #7c5200; }
+    .not-started { background: #e4e9ed; color: #465662; }
+    footer { border-top: 1px solid #bfdbd8; color: #52616b; font-size: 8.5pt; margin-top: 44px; padding-top: 12px; }
+    @media print {
+      body { max-width: none; padding: 0; }
+      h2 { break-after: avoid; }
+      h3, table, .callout, .diagram { break-inside: avoid; }
+      header { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="kicker">Implementation guide · 9 September 2026</div>
+    <h1>Porter</h1>
+    <p>Developer guide for a native macOS file-transfer app and its paired Android companion.</p>
+  </header>
+
+  <p class="lede">Porter makes an Android phone behave like a drive over USB or a trusted local network connection. The Swift package owns transfer semantics; the macOS app owns presentation and saved pairings; the Android companion supplies the local Wi-Fi endpoint.</p>
+
+  <div class="callout">
+    <strong>Current boundary.</strong> ADB and MTP are implemented USB paths. The paired Wi-Fi client and Android companion compile and implement the complete v1 protocol. The next proof point is installation and end-to-end validation on real Android hardware.
+  </div>
+
+  <h2>1. System shape</h2>
+  <div class="diagram">                         SwiftUI app (App/)
+                                  |
+              +-------------------+-------------------+
+              |                                       |
+       DeviceCoordinator                        TransferEngine
+       discovery and selection                 queue, partials, resume,
+              |                                verification, conflicts
+              +--------------- DeviceTransport -------+
+                                      |
+             +------------------------+------------------------+
+             |                        |                        |
+        ADBTransport              MTPTransport            WiFiTransport
+       USB debugging            USB File Transfer        local HTTPS companion</div>
+
+  <p><code>Kit/</code> contains the UI-independent model, transport, discovery, and transfer engine. The boundary is intentional: transfer failure behavior can be tested without a cable, a device lock screen, or a network disconnect occurring at an inconvenient moment.</p>
+
+  <h3>Transport contract</h3>
+  <p>Every transport implements <code>DeviceTransport</code> and publishes <code>TransportCapabilities</code>. The engine reads capabilities rather than checking a transport kind, so differences such as resumability and device hashing are explicit data rather than scattered conditional logic.</p>
+
+  <table>
+    <thead><tr><th>Transport</th><th>Connection</th><th>What it provides</th><th>Limit to expose</th></tr></thead>
+    <tbody>
+      <tr><td>ADB</td><td>USB debugging</td><td>Ranged reads, resumable writes, SHA-256 on device, mtime, reliable size and capacity.</td><td>Requires developer options and USB debugging.</td></tr>
+      <tr><td>MTP</td><td>USB File Transfer</td><td>Browse and copy without USB debugging.</td><td>Serial operations; no dependable resume or device checksum; mtime and capacity are best effort.</td></tr>
+      <tr><td>Wi-Fi</td><td>Paired Android companion on the same LAN</td><td>Range downloads, offset uploads, SHA-256/MD5, mtime, and capacity.</td><td>Requires the companion and all-files access. The Mac does not browse mDNS advertisements yet.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Transfer guarantees</h3>
+  <p>Incoming bytes always land in a <code>.porterpart</code> sidecar. A final name appears only when the transfer meets that transport's completion rules. ADB and Wi-Fi resume interruptions; MTP restarts them because Android MTP implementations do not provide trustworthy range behavior. ADB and Wi-Fi compare a Mac hash with a device hash. MTP is marked <em>unverified</em> because it has no checksum operation.</p>
+
+  <h2>2. USB paths</h2>
+  <h3>ADB</h3>
+  <p>ADB is preferred when a device exposes both USB modes. The engine can use a native bulk pull for a fresh copy and a streamed range read for a resumed copy. It preserves modification dates and asks the device to hash completed bytes before reporting verified success. Small files at or below 8 MiB can share an ADB pull and hashing invocation to reduce per-process overhead.</p>
+
+  <h3>MTP</h3>
+  <p>MTP is the direct fallback for a phone in ordinary File Transfer mode. Porter implements the protocol framing, USB bulk pipe, session layer, handle-to-path resolution, and transport directly. Session transactions are serialised: a response cannot be picked up by a later UI request after a fast folder change.</p>
+  <div class="callout warning">
+    <strong>macOS ownership rule.</strong> <code>ptpcamerad</code> may claim an MTP interface before Porter. Porter starts an interface claimer and races at attach time. Start Porter before plugging in the phone; if another process wins, unplug and reconnect. <code>porterctl mtp</code> and <code>porterctl mtp-watch</code> diagnose the interface holder. Photos and Image Capture cannot use a phone while Porter holds its MTP interface.
+  </div>
+
+  <h2>3. Paired Wi-Fi</h2>
+  <p>The Wi-Fi path is local-only: it has no account system, relay service, or Internet API. The companion starts an HTTPS server on port 53317 and advertises <code>_porter._tcp</code>. The current Mac UI intentionally asks for the phone's address, six-digit code, and displayed certificate fingerprint; Mac-side service browsing is a follow-up once the core pairing path is validated.</p>
+
+  <h3>Pairing and trust sequence</h3>
+  <ol>
+    <li>The Android companion creates or reuses a self-signed RSA identity in Android Keystore and displays a six-digit pairing code plus the certificate SHA-256 fingerprint.</li>
+    <li>Porter posts the code and a client name to <code>POST /v1/pair</code> over TLS.</li>
+    <li>The Mac accepts the self-signed certificate for this request only, calculates the leaf certificate SHA-256 fingerprint, and compares it to both the fingerprint transcribed from the phone and the value in the pairing response.</li>
+    <li>Only matching values are saved. The bearer token goes in login Keychain; preferences contain only device name, host, port, and pinned fingerprint.</li>
+    <li>Later requests carry the bearer token and use a URL session that rejects any certificate other than the pinned fingerprint.</li>
+  </ol>
+  <p>The companion stores hashes of issued tokens and rate-limits repeated bad pairing codes. It is not enough for a peer to know an address or intercept a code: the certificate presented at pairing must be the fingerprint read from the phone.</p>
+
+  <h3>Android storage boundary</h3>
+  <p>The user grants all-files access before starting sharing. The server canonicalises every requested path, permits it only beneath Android shared-storage roots, and refuses to modify a volume root. This is a second boundary behind authentication: a paired Mac can manage shared files but cannot request arbitrary system or app-private paths.</p>
+
+  <h3>v1 protocol</h3>
+  <table>
+    <thead><tr><th>Endpoint</th><th>Method</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>/v1/pair</code></td><td>POST</td><td>Exchanges the six-digit code for a token, device name, and certificate fingerprint.</td></tr>
+      <tr><td><code>/v1/info</code>, <code>/volumes</code>, <code>/list</code>, <code>/stat</code>, <code>/free</code></td><td>GET</td><td>Device and filesystem metadata.</td></tr>
+      <tr><td><code>/v1/mkdir</code>, <code>/delete</code>, <code>/move</code>, <code>/touch</code></td><td>POST</td><td>Directory and metadata mutation.</td></tr>
+      <tr><td><code>/v1/read</code></td><td>GET</td><td>Raw bytes; supports an open-ended HTTP <code>Range</code> for resume.</td></tr>
+      <tr><td><code>/v1/write</code></td><td>PUT</td><td>Raw bytes at an explicit <code>offset</code>; a zero-length request trims a partial upload.</td></tr>
+      <tr><td><code>/v1/checksum</code></td><td>GET</td><td>SHA-256 or MD5 of a shared-storage file.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>4. Discovery, paths, and preflight</h2>
+  <p><code>USBDeviceMonitor</code> watches IOKit and distinguishes a charge-only phone from one exposing ADB or MTP. <code>DeviceMerge</code> combines USB, ADB, and persisted wireless records into one list and chooses the best usable transport.</p>
+  <p>Android user storage is commonly a FUSE presentation layer. The ADB path resolves its backing filesystem where possible so a FAT32 4 GiB limit can be detected before transfer. MTP does not reliably provide that identity and must not guess. The Wi-Fi companion reports capacity from the actual storage root and rejects a write chunk that does not fit.</p>
+
+  <h2>5. Repository layout</h2>
+  <pre>Kit/                         Swift package: model, transports, engine, discovery
+  Sources/PorterKit/
+    Transport/ADB/              ADB process transport
+    Transport/MTP/              Direct MTP protocol, pipe, and session
+    Transport/WiFi/             v1 protocol, pairing, certificate-pinned client
+  Sources/porterctl/            Read-only diagnostic CLI
+  Tests/                        172 tests in 22 suites
+App/                            SwiftUI app, saved Wi-Fi registry and pairing sheet
+Android/                        Companion Android application and Gradle wrapper
+Docs/                           Architecture, status, testing notes, this guide
+project.yml                     XcodeGen input</pre>
+
+  <h2>6. Build and test</h2>
+  <h3>Mac package</h3>
+  <pre>cd Kit
+swift test</pre>
+  <p>The current suite contains 172 tests in 22 suites. It covers the model, parsing, transfer planner/engine, transport capabilities, MTP protocol/session behavior, and Wi-Fi client/pairing validation paths.</p>
+
+  <h3>macOS app</h3>
+  <pre>xcodegen generate
+xcodebuild -project Porter.xcodeproj -scheme Porter -configuration Debug build</pre>
+  <p>The app target needs a signing team in <code>project.yml</code>. macOS 14+ and Xcode 26 are the project baseline.</p>
+
+  <h3>Android companion</h3>
+  <pre>cd Android
+./gradlew :app:assembleDebug</pre>
+  <p>Use JDK 17, Android SDK platform 35, and Gradle 9.6 or newer. Configure the Android SDK through <code>ANDROID_HOME</code> or the untracked <code>Android/local.properties</code> on a development machine. The project uses platform APIs only; it does not depend on a third-party HTTP server or TLS library.</p>
+
+  <h2>7. Hardware validation plan</h2>
+  <ol>
+    <li>Install the debug APK on an Android 11+ phone and grant all-files access.</li>
+    <li>Start sharing, confirm the displayed local address and code, and pair from the Mac app.</li>
+    <li>Browse every advertised volume; copy a mixed directory in both directions; confirm mtime and checksum status.</li>
+    <li>Interrupt a download and an upload, then retry. Confirm a <code>.porterpart</code> resumes rather than becoming a final file.</li>
+    <li>Enter a wrong code repeatedly, verify rate limiting, then pair correctly. Change or clear the Android app's certificate and verify that the Mac rejects the changed fingerprint until re-paired.</li>
+    <li>Run a sustained mixed-file transfer and record device model, Android release, storage type, network type, throughput, and failure details.</li>
+  </ol>
+
+  <h2>8. Next phases</h2>
+  <table>
+    <thead><tr><th>Phase</th><th>Status</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td>Wi-Fi hardware validation</td><td><span class="status pending">Next</span></td><td>Prove the compiled pairing and transfer path on real devices before expanding it.</td></tr>
+      <tr><td>Mac mDNS browser</td><td><span class="status pending">Planned</span></td><td>Discover <code>_porter._tcp</code> services, while keeping the pairing code and fingerprint as the trust gate.</td></tr>
+      <tr><td>Finder File Provider</td><td><span class="status not-started">Not started</span></td><td>Expose a limited Finder surface through an XPC proxy to the main app. A sandboxed extension cannot spawn <code>adb</code>.</td></tr>
+      <tr><td>Release hardening</td><td><span class="status pending">Planned</span></td><td>Signing, notarisation, bundled ADB, and broader MTP/Wi-Fi compatibility testing.</td></tr>
+      <tr><td>Phase 3</td><td><span class="status not-started">Not started</span></td><td>Photo import, watched folders, APK sideloading, and Quick Look.</td></tr>
+    </tbody>
+  </table>
+
+  <footer>Porter Developer Guide · generated from <code>Docs/developer-guide.html</code> · keep this document aligned with the source-level status in <code>Docs/status.md</code>.</footer>
+</body>
+</html>

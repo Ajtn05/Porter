@@ -44,17 +44,25 @@ final class AppModel {
     var pendingConflict: PendingConflict?
     var planWarnings: [PlanWarning] = []
     var showWarnings = false
+    var showWiFiPairing = false
+    var isPairingWiFi = false
+    var wifiPairingError: String?
 
     let coordinator: DeviceCoordinator
     let engine: TransferEngine
     private let queue: TransferQueue
+    let wifiDevices: WiFiDeviceRegistry
     private var eventTask: Task<Void, Never>?
     private var deviceTask: Task<Void, Never>?
 
     init() {
         let queue = TransferQueue()
-        let coordinator = DeviceCoordinator()
+        let wifiDevices = WiFiDeviceRegistry()
+        let coordinator = DeviceCoordinator(wifiConnection: { device in
+            await wifiDevices.connection(for: device.id)
+        })
         self.queue = queue
+        self.wifiDevices = wifiDevices
         self.coordinator = coordinator
         self.engine = TransferEngine(queue: queue, resolver: coordinator)
     }
@@ -79,6 +87,7 @@ final class AppModel {
         Task {
             await queue.load()
             transferItems = await queue.orderedItems
+            await coordinator.setWirelessDevices(await wifiDevices.wirelessDevices())
             await coordinator.start()
         }
         deviceTask = Task { [coordinator] in

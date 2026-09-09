@@ -4,16 +4,19 @@
 # Porter
 
 A free, native macOS app for moving files to and from an Android phone over a
-USB cable. It supports both USB debugging (ADB) and the standard Android file
-transfer mode (MTP), so USB debugging is optional.
+USB cable or the local network. It supports USB debugging (ADB), the standard
+Android file-transfer mode (MTP), and a paired Wi-Fi companion app, so USB
+debugging is optional.
 
-Google discontinued Android File Transfer in May 2024 and most alternatives are either paid, bloated, or look outdated. This aims to replace all that. The phone behaves like a drive, with resumable and checksum-verified ADB transfers plus a standard MTP fallback when USB debugging is off.
+Google discontinued Android File Transfer in May 2024 and most alternatives are either paid, bloated, or look outdated. This aims to replace all that. The phone behaves like a drive, with resumable and checksum-verified ADB or paired Wi-Fi transfers plus a standard MTP fallback when USB debugging is off.
 </div>
 
 ## Status
 
 Early functionality has been tested with a Galaxy S22 on Android 16. It can
 browse and copy over USB debugging (ADB) or normal File Transfer mode (MTP).
+The new paired Wi-Fi path builds on both platforms and is ready for on-device
+integration testing.
 
 
 **Works:** USB discovery identifies file-transfer mode separately from
@@ -34,6 +37,23 @@ pulling and hashing: files at or below 8 MiB can share one `adb pull` and one
 checksum verification. A 3 GB / 716-file batch completed with 716 verified
 and no failures. The small-file batching implementation is covered by fake
 device tests; its real-device throughput still needs measuring.
+
+## Paired Wi-Fi
+
+The repository now includes `Android/`, a companion app that serves the same
+v1 Wi-Fi protocol used by `WiFiTransport`. Start sharing in the companion,
+then choose **Pair Wi-Fi Phone** in Porter and enter the phone's local address
+and six-digit code, plus its displayed certificate fingerprint. Pairing happens
+over TLS; the Mac compares that out-of-band fingerprint to the certificate it
+sees and to the pairing reply, then keeps the bearer token in Keychain and pins
+that certificate for every later request.
+There is no account, cloud relay, or Internet service.
+
+The companion supports volume and directory operations, ranged downloads,
+resumable uploads, SHA-256/MD5 checksums, modification dates, and free-space
+reports. It advertises `_porter._tcp` on the LAN for future discovery; the Mac
+pairing screen currently asks for the address manually. The server restricts
+requests to Android shared-storage roots and will not modify a volume root.
 
 
 ## MTP, without USB debugging
@@ -61,8 +81,10 @@ phone until it is unplugged.
 
 ## Next
 
-1. **Android companion app for Wi-Fi.** `WiFiTransport` and its protocol are
-   implemented on macOS, but there is no Android server yet.
+1. **Validate paired Wi-Fi on hardware.** Install the companion on real phones,
+   exercise pairing, resume, certificate rejection, storage permissions, and
+   long-running transfers. Add Mac-side mDNS discovery after that path is
+   proven.
 2. **File Provider extension.** This would put the phone in the Finder sidebar.
    The sandboxed extension must proxy ADB work to the main app over XPC.
 3. **Phase 3:** photo import, watched folders, and APK sideloading.
@@ -82,8 +104,9 @@ Kit/                    Swift package - all the logic, no UI
     Discovery/          USB bus watching and device merging
     Support/            Checksums, sanitising, throughput
   Sources/porterctl/       Read-only diagnostic CLI
-  Tests/                171 tests
+  Tests/                172 tests
 App/                    The SwiftUI app
+Android/                Companion app for local Wi-Fi transfers
 project.yml             XcodeGen input; generates Porter.xcodeproj
 ```
 
@@ -127,6 +150,13 @@ xcodegen generate && open Porter.xcodeproj
 macOS 14+, Xcode 26. The app target needs a signing team; set `DEVELOPMENT_TEAM`
 in `project.yml`.
 
+The Android companion uses JDK 17, Android SDK platform 35, and Gradle 9.6 or
+newer. With an Android SDK configured locally:
+
+```bash
+cd Android && ./gradlew :app:assembleDebug
+```
+
 ## The diagnostic CLI
 
 `porterctl` runs the same transport code the app runs and prints what it saw.
@@ -155,7 +185,7 @@ that interface on each subsequent attach. The two MTP commands do not use ADB.
 **Transport and interface.** `ADBTransport` is preferred because it can seek
 within a file, hash a file in place, report reliable sizes, and set an mtime.
 `MTPTransport` is the direct USB fallback for phones without USB debugging.
-`WiFiTransport` speaks to the future companion Android app. Each publishes
+`WiFiTransport` speaks to the paired local Android companion. Each publishes
 `TransportCapabilities`, and the engine reads those rather than switching on
 the transport kind.
 
@@ -164,10 +194,9 @@ filename only appears once the file is complete. ADB can resume an aligned
 partial after a disconnect; MTP deliberately restarts it because ranged reads
 and resumable writes are not dependable across Android MTP implementations.
 
-**Verification.** With ADB, the device hashes its own copy with `sha256sum`,
-Porter hashes its copy, and a mismatch discards the result. MTP has no
-device-side checksum operation, so an MTP transfer can complete but is marked
-*unverified*.
+**Verification.** With ADB or paired Wi-Fi, the device hashes its own copy and
+Porter hashes its copy; a mismatch discards the result. MTP has no device-side
+checksum operation, so an MTP transfer can complete but is marked *unverified*.
 
 
 

@@ -45,6 +45,33 @@ struct InteractiveConflictResolver: ConflictResolving {
 
 extension AppModel {
 
+    // MARK: - Wi-Fi pairing
+
+    /// Pairs the Mac with the address, code, and fingerprint shown by the
+    /// Android companion, then publishes the saved phone through discovery.
+    func pairWiFiPhone(host: String, code: String, fingerprint: String) {
+        guard !isPairingWiFi else { return }
+        isPairingWiFi = true
+        wifiPairingError = nil
+
+        Task {
+            defer { isPairingWiFi = false }
+            do {
+                let result = try await WiFiPairing.pair(
+                    host: host, code: code, expectedFingerprint: fingerprint,
+                    clientName: Host.current().localizedName ?? "Mac"
+                )
+                let id = try await wifiDevices.savePairing(host: host, result: result)
+                await coordinator.invalidateTransport(for: id)
+                await coordinator.setWirelessDevices(await wifiDevices.wirelessDevices())
+                selectedDeviceID = id
+                showWiFiPairing = false
+            } catch {
+                wifiPairingError = (error as? TransferError)?.errorDescription ?? error.localizedDescription
+            }
+        }
+    }
+
     // MARK: - Copying
 
     /// Copies the device-pane selection into the current Mac directory.

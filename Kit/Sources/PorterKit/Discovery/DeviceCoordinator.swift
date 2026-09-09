@@ -1,5 +1,18 @@
 import Foundation
 
+/// The address and credentials needed to reopen a paired Wi-Fi device.
+public struct WiFiConnection: Sendable {
+    public var host: String
+    public var port: Int
+    public var credentials: WiFiCredentials
+
+    public init(host: String, port: Int = 53317, credentials: WiFiCredentials) {
+        self.host = host
+        self.port = port
+        self.credentials = credentials
+    }
+}
+
 /// Owns device discovery and vends transports.
 ///
 /// Callers ask for a device by ID and get a readable, writable transport. This
@@ -20,10 +33,18 @@ public actor DeviceCoordinator: TransportResolver {
     /// How the USB bus is read. Injected so the refresh path can be exercised
     /// without a phone on the other end of a cable.
     private let readUSB: @Sendable () -> [USBDeviceMonitor.Snapshot]
+    /// Supplied by the app because pairing secrets belong in its Keychain, not
+    /// in the discovery model or a transfer queue on disk.
+    private let wifiConnection: @Sendable (Device) async -> WiFiConnection?
 
     public init(adbURL: URL? = nil,
-                readUSB: (@Sendable () -> [USBDeviceMonitor.Snapshot])? = nil) {
+                readUSB: (@Sendable () -> [USBDeviceMonitor.Snapshot])? = nil,
+                wifiConnection: (@Sendable (Device) async -> WiFiConnection?)? = nil) {
         self.readUSB = readUSB ?? { USBDeviceMonitor.currentDevices() }
+        self.wifiConnection = wifiConnection ?? { device in
+            guard let host = device.endpointHost else { return nil }
+            return WiFiConnection(host: host, credentials: .unpaired)
+        }
         self.adbURL = adbURL ?? ADBLocator.locate()
         if self.adbURL == nil {
             adbUnavailableReason = "adb was not found, so devices without USB debugging will use the slower file-transfer mode."
@@ -151,10 +172,11 @@ public actor DeviceCoordinator: TransportResolver {
             let pipe = try await MTPUSBPipe.open(matching: usb, deviceID: device.id)
             return MTPTransport(device: device, pipe: pipe)
         case .wifi:
-            guard let host = device.endpointHost else {
+            guard let connection = await wifiConnection(device) else {
                 throw TransferError.transportUnavailable(.wifi, reason: "no address for this device")
             }
-            return WiFiTransport(device: device, host: host)
+            return WiFiTransport(device: device, host: connection.host, port: connection.port,
+                                 credentials: connection.credentials)
         }
     }
 

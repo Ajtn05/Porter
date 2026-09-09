@@ -4,8 +4,8 @@ import Foundation
 /// Talks to the Android companion app over the local network.
 ///
 /// Uses TLS with a certificate pinned at pairing time and a bearer token issued
-/// against the six-digit code shown on the phone. Traffic stays on the LAN and
-/// no account is involved.
+/// after the phone's code and fingerprint are verified. Traffic stays on the
+/// LAN and no account is involved.
 public actor WiFiTransport: DeviceTransport {
     public nonisolated let kind: TransportKind = .wifi
 

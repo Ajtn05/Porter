@@ -22,12 +22,25 @@ struct ContentView: View {
                 TransferDrawer()
             }
             .toolbar { BrowserToolbar() }
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        model.showWiFiPairing = true
+                    } label: {
+                        Label("Pair Wi-Fi Phone", systemImage: "wifi.badge.plus")
+                    }
+                    .help("Pair a phone running Porter Companion on this network")
+                }
+            }
         }
         .sheet(item: $model.pendingConflict) { conflict in
             ConflictSheet(conflict: conflict)
         }
         .sheet(isPresented: $model.showWarnings) {
             WarningsSheet(warnings: model.planWarnings)
+        }
+        .sheet(isPresented: $model.showWiFiPairing) {
+            WiFiPairingSheet()
         }
     }
 }
