@@ -41,6 +41,11 @@ actor FakeTransport: DeviceTransport {
     private(set) var readCallCount = 0
     private(set) var lastReadOffset: Int64 = 0
 
+    private(set) var checksumCallCount = 0
+    /// How many paths each batched hash call was asked for, in order. A folder
+    /// of small files should produce one large entry rather than many of one.
+    private(set) var checksumBatchSizes: [Int] = []
+
     /// Stands in for `adb pull`: a bulk path faster than streaming.
     var supportsFastPull = false
     private(set) var fastPullCallCount = 0
@@ -223,8 +228,28 @@ actor FakeTransport: DeviceTransport {
     }
 
     func checksum(_ path: RemotePath, algorithm: ChecksumAlgorithm) async throws -> Checksum? {
+        checksumCallCount += 1
         guard hasChecksumTool else { return nil }
         guard let data = files[path.string] else { throw TransferError.notFound(path) }
+        return hash(data)
+    }
+
+    /// Hashes a list in one go, as `sha256sum` over many paths does.
+    ///
+    /// A path the device does not have is left out of the result rather than
+    /// throwing, which is what a real batch does: one unreadable file must not
+    /// cost the hashes of the others.
+    func checksums(_ paths: [RemotePath], algorithm: ChecksumAlgorithm) async throws -> [RemotePath: Checksum] {
+        checksumBatchSizes.append(paths.count)
+        guard hasChecksumTool else { return [:] }
+        var result: [RemotePath: Checksum] = [:]
+        for path in paths {
+            if let data = files[path.string] { result[path] = hash(data) }
+        }
+        return result
+    }
+
+    private func hash(_ data: Data) -> Checksum {
         if corruptChecksum {
             return Checksum(algorithm: .sha256, value: String(repeating: "0", count: 64))
         }

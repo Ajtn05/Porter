@@ -504,6 +504,80 @@ public actor ADBTransport: DeviceTransport {
     }
 
     public func checksum(_ path: RemotePath, algorithm: ChecksumAlgorithm) async throws -> Checksum? {
+        guard let effective = try await effectiveChecksumTool(preferring: algorithm) else { return nil }
+        // Hashing a large file on a phone is slow, so no timeout. Cancellation
+        // still applies.
+        let output = try await shell("\(effective.deviceCommand) \(path.shellQuoted)", timeout: nil)
+        return ChecksumService.parseSumOutput(output, algorithm: effective)
+    }
+
+    /// Hashes a list of files with one `sha256sum` per batch rather than one
+    /// per file.
+    ///
+    /// What this saves is the round trip and the shell Android spawns for it,
+    /// which is the entire cost for anything small. The hashing is the same
+    /// work either way, so the gain is proportional to how many files are in
+    /// the batch and disappears once each file is large enough to dominate.
+    public func checksums(_ paths: [RemotePath], algorithm: ChecksumAlgorithm) async throws -> [RemotePath: Checksum] {
+        guard let effective = try await effectiveChecksumTool(preferring: algorithm) else { return [:] }
+
+        var result: [RemotePath: Checksum] = [:]
+
+        // A name holding a newline is indistinguishable from the break between
+        // two results, so it is hashed on its own where the path is known from
+        // having asked for exactly one.
+        for path in paths where path.string.contains("\n") {
+            try Task.checkCancellation()
+            if let checksum = try await checksum(path, algorithm: algorithm) { result[path] = checksum }
+        }
+
+        for batch in Self.checksumBatches(paths.filter { !$0.string.contains("\n") }) {
+            try Task.checkCancellation()
+            let command = ([effective.deviceCommand] + batch.map(\.shellQuoted)).joined(separator: " ")
+            // Deliberately not `shell`, which throws on a non-zero exit:
+            // sha256sum exits non-zero when any one path is unreadable, and the
+            // hashes of the others are on stdout and still wanted. A path that
+            // produced no line is simply absent from the result.
+            let output = try await adb(["shell", command], timeout: nil)
+            let parsed = ChecksumService.parseSumLines(output.stdoutText, algorithm: effective)
+            for path in batch where parsed[path.string] != nil {
+                result[path] = parsed[path.string]
+            }
+        }
+        return result
+    }
+
+    /// Splits paths into command lines Android's shell will accept.
+    ///
+    /// `adb shell` sends the command as one string and the ROM rejects an
+    /// over-long one rather than splitting it. Both bounds sit far below any
+    /// limit measured; the round trip is saved per batch, so raising them
+    /// buys very little.
+    static func checksumBatches(_ paths: [RemotePath]) -> [[RemotePath]] {
+        let byteLimit = 8 * 1024
+        let countLimit = 64
+
+        var batches: [[RemotePath]] = []
+        var current: [RemotePath] = []
+        var length = 0
+
+        for path in paths {
+            let cost = path.shellQuoted.utf8.count + 1
+            if !current.isEmpty && (current.count >= countLimit || length + cost > byteLimit) {
+                batches.append(current)
+                current = []
+                length = 0
+            }
+            current.append(path)
+            length += cost
+        }
+        if !current.isEmpty { batches.append(current) }
+        return batches
+    }
+
+    /// The algorithm to hash with: the requested one where the device has it,
+    /// and whatever it does have otherwise. Nil when it has neither.
+    private func effectiveChecksumTool(preferring algorithm: ChecksumAlgorithm) async throws -> ChecksumAlgorithm? {
         if !didProbeChecksumTool {
             // Only a definitive answer is cached. Recording an interrupted
             // probe as "no hashing tool" would disable verification for the
@@ -512,13 +586,7 @@ public actor ADBTransport: DeviceTransport {
             didProbeChecksumTool = true
         }
         guard let tool = checksumTool else { return nil }
-        // Use the requested algorithm when the device supports it, otherwise
-        // fall back to what it has; the returned checksum names the algorithm.
-        let effective = (tool == algorithm) ? algorithm : tool
-        // Hashing a large file on a phone is slow, so no timeout. Cancellation
-        // still applies.
-        let output = try await shell("\(effective.deviceCommand) \(path.shellQuoted)", timeout: nil)
-        return ChecksumService.parseSumOutput(output, algorithm: effective)
+        return (tool == algorithm) ? algorithm : tool
     }
 
     /// Finds a hashing tool on the device.

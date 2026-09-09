@@ -94,6 +94,19 @@ public protocol DeviceTransport: Sendable {
     /// has no suitable tool.
     func checksum(_ path: RemotePath, algorithm: ChecksumAlgorithm) async throws -> Checksum?
 
+    /// Hashes several files in as few round trips as the transport can manage.
+    ///
+    /// Worth having separately from `checksum` because the cost of hashing a
+    /// small file is the round trip and the process the device spawns for it,
+    /// not the hashing: about 145 ms a file over adb, which is what holds a
+    /// folder of thumbnails to a fraction of the throughput a single large file
+    /// gets. A transport that can hash a list in one command says so by
+    /// overriding this.
+    ///
+    /// A path absent from the result has no hash and is to be treated as
+    /// unverified, never as a mismatch.
+    func checksums(_ paths: [RemotePath], algorithm: ChecksumAlgorithm) async throws -> [RemotePath: Checksum]
+
     /// Trims a file on the device to `length`.
     ///
     /// Required to resume a push: the sidecar may end in a half-written block,
@@ -117,6 +130,18 @@ public extension DeviceTransport {
     func fastPull(_ path: RemotePath, to localURL: URL,
                   progress: @escaping @Sendable (Int64) -> Void) async throws -> Bool {
         false
+    }
+
+    /// One call per path, for transports with no way to hash a list at once.
+    func checksums(_ paths: [RemotePath], algorithm: ChecksumAlgorithm) async throws -> [RemotePath: Checksum] {
+        var result: [RemotePath: Checksum] = [:]
+        for path in paths {
+            try Task.checkCancellation()
+            if let checksum = try await checksum(path, algorithm: algorithm) {
+                result[path] = checksum
+            }
+        }
+        return result
     }
 
     /// Recursively lists everything under `root`, yielding directories before

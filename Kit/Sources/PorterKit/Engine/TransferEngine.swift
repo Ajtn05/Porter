@@ -40,6 +40,10 @@ public actor TransferEngine {
     /// ceiling and this as the binding constraint.
     private var transportLimits: [DeviceID: Int] = [:]
     private var runningDevices: [DeviceID: Int] = [:]
+    /// Device-side hashes fetched ahead of the file that needs them, keyed by
+    /// device and then by remote path. Filled a batch at a time by
+    /// `deviceChecksum(for:using:)` and read exactly once per entry.
+    private var checksumCache: [DeviceID: [RemotePath: Checksum]] = [:]
 
     private var continuations: [UUID: AsyncStream<TransferEvent>.Continuation] = [:]
 
@@ -50,6 +54,17 @@ public actor TransferEngine {
 
     /// Whether to verify each file with a checksum after copying. On by default.
     public var verifiesChecksums: Bool
+
+    /// Files at or below this size have their hash fetched in a batch.
+    ///
+    /// Above it the device spends longer reading the file than the round trip
+    /// costs, so batching would buy nothing and would hold up the files sharing
+    /// the call. At the measured 30 MB/s a 145 ms round trip is worth about
+    /// 4 MB of transfer, so the two meet in the low megabytes.
+    private static let checksumBatchSizeLimit: Int64 = 8 * 1024 * 1024
+    /// How many hashes to ask for in one call. The transport splits this again
+    /// to fit the device's command line.
+    private static let checksumBatchLimit = 64
 
     public init(queue: TransferQueue, resolver: any TransportResolver,
                 maximumConcurrency: Int = 3, verifiesChecksums: Bool = true,
@@ -130,6 +145,7 @@ public actor TransferEngine {
         }
         tasks.removeAll()
         running.removeAll()
+        checksumCache.removeAll()
         await queue.flush()
         await emitSummary()
     }
@@ -207,7 +223,12 @@ public actor TransferEngine {
             guard running.count < maximumConcurrency,
                   let next = await queue.nextQueued(excluding: running),
                   hasCapacity(forDevice: next.deviceID) else {
-                if running.isEmpty { return }
+                if running.isEmpty {
+                    // Nothing left to share a call with, and a prefetched hash
+                    // describes the device as it was when it was taken.
+                    checksumCache.removeAll()
+                    return
+                }
                 // Wait for a slot rather than spinning.
                 try? await Task.sleep(for: .milliseconds(120))
                 continue
@@ -415,9 +436,75 @@ public actor TransferEngine {
         }
     }
 
+    /// The device-side hash for a finished pull, taken from a batch where a
+    /// batch is worth taking.
+    ///
+    /// Hashing over adb costs a round trip and a process spawn on the device,
+    /// about 145 ms, and that is per call rather than per byte. For a folder of
+    /// small files it is most of the wall clock. So the first small file to
+    /// reach verification pays for one call covering the other small pulls
+    /// queued against the same device, and the rest read the answer out of the
+    /// cache for nothing.
+    ///
+    /// Large files are asked for singly: the device reads the whole file to
+    /// hash it, which dwarfs the round trip, and batching one in would only
+    /// delay every file sharing the call.
+    private func deviceChecksum(for item: TransferItem,
+                                using transport: any DeviceTransport) async throws -> Checksum? {
+        if let cached = checksumCache[item.deviceID]?.removeValue(forKey: item.remotePath) {
+            return cached
+        }
+        guard item.totalBytes <= Self.checksumBatchSizeLimit else {
+            return try await transport.checksum(item.remotePath, algorithm: .sha256)
+        }
+
+        let paths = await batchableChecksumPaths(for: item)
+        guard paths.count > 1 else {
+            return try await transport.checksum(item.remotePath, algorithm: .sha256)
+        }
+
+        let fetched = try await transport.checksums(paths, algorithm: .sha256)
+        // Everything but this item's own hash is kept for the files that ask
+        // next. A path missing from the batch is left missing rather than
+        // cached as absent, so it takes the fallback below when its turn comes.
+        var cache = checksumCache[item.deviceID] ?? [:]
+        for (path, checksum) in fetched where path != item.remotePath {
+            cache[path] = checksum
+        }
+        checksumCache[item.deviceID] = cache
+
+        if let own = fetched[item.remotePath] { return own }
+        // The batch came back without a line for this file. Ask for it singly
+        // rather than treating the gap as "no hash available": a device that
+        // refuses one path is not a device with no hashing tool, and only the
+        // single-file call reports the difference.
+        return try await transport.checksum(item.remotePath, algorithm: .sha256)
+    }
+
+    /// The item's own path plus the other small pulls waiting on the same
+    /// device, in queue order and capped, so the batch matches what is about to
+    /// be verified next.
+    private func batchableChecksumPaths(for item: TransferItem) async -> [RemotePath] {
+        var paths: [RemotePath] = [item.remotePath]
+        var seen: Set<RemotePath> = [item.remotePath]
+
+        for other in await queue.orderedItems {
+            guard paths.count < Self.checksumBatchLimit else { break }
+            guard other.id != item.id,
+                  other.deviceID == item.deviceID,
+                  other.direction == .pull,
+                  !other.isDirectoryPlaceholder,
+                  other.totalBytes <= Self.checksumBatchSizeLimit,
+                  other.state == .queued || other.state.isActive,
+                  seen.insert(other.remotePath).inserted else { continue }
+            paths.append(other.remotePath)
+        }
+        return paths
+    }
+
     private func verifyPull(_ item: TransferItem, partialURL: URL, transport: any DeviceTransport) async throws {
         guard transport.capabilities.supportsDeviceSideChecksum,
-              let deviceChecksum = try await transport.checksum(item.remotePath, algorithm: .sha256) else {
+              let deviceChecksum = try await deviceChecksum(for: item, using: transport) else {
             // No device-side hash available, so the size check above is the
             // only validation. The item is left marked unverified.
             return

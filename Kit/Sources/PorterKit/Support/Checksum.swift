@@ -98,3 +98,36 @@ public enum ChecksumService {
         return Checksum(algorithm: algorithm, value: String(hex))
     }
 }
+
+extension ChecksumService {
+    /// Parses many lines of `sha256sum`/`md5sum` output into one hash per path.
+    ///
+    /// Keyed by the path exactly as it was written on the command line, which
+    /// is what both toybox and coreutils echo back. A file the device could not
+    /// read prints on stderr and produces no line here, so a path missing from
+    /// the result means "no hash for it", never a hash belonging to some other
+    /// file.
+    public static func parseSumLines(_ output: String, algorithm: ChecksumAlgorithm) -> [String: Checksum] {
+        let width = algorithm == .sha256 ? 64 : 32
+        var result: [String: Checksum] = [:]
+
+        for line in output.split(separator: "\n") {
+            // A leading backslash marks a name whose newline or backslash
+            // coreutils escaped, so the path printed is not the path that was
+            // sent and cannot be matched back to one. Dropped rather than
+            // guessed at; the caller hashes that file on its own.
+            guard !line.hasPrefix("\\") else { continue }
+
+            let hex = line.prefix(width)
+            guard hex.count == width, hex.allSatisfy({ $0.isHexDigit }) else { continue }
+
+            // Two characters separate the hash from the name: a space, then a
+            // mode flag that is a space for text and an asterisk for binary.
+            let rest = line.dropFirst(width)
+            guard rest.count > 2, rest.hasPrefix(" ") else { continue }
+
+            result[String(rest.dropFirst(2))] = Checksum(algorithm: algorithm, value: String(hex))
+        }
+        return result
+    }
+}
