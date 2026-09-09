@@ -52,6 +52,15 @@ actor FakeTransport: DeviceTransport {
     /// Slows the bulk path so a pause can land in the middle of it.
     var fastPullDelay: Duration = .zero
 
+    /// Stands in for `adb pull` over a list of paths. Off by default, so the
+    /// tests that predate it still exercise the file-at-a-time path.
+    var supportsBulkPull = false
+    /// How many files each batch read was asked for, in order.
+    private(set) var bulkPullSizes: [Int] = []
+    /// Paths the batch refuses to deliver, standing in for a file the device
+    /// would not read. They must still arrive by the single-file path.
+    var bulkPullOmits: Set<String> = []
+
     init(kind: TransportKind = .adb, capabilities: TransportCapabilities? = nil) {
         self.kind = kind
         let resolved = capabilities ?? TransportCapabilities(
@@ -79,6 +88,8 @@ actor FakeTransport: DeviceTransport {
     func setSupportsFastPull(_ value: Bool) { supportsFastPull = value }
     func setFastPullDelay(_ value: Duration) { fastPullDelay = value }
     func setCorruptChecksum(_ value: Bool) { corruptChecksum = value }
+    func setSupportsBulkPull(_ value: Bool) { supportsBulkPull = value }
+    func setBulkPullOmits(_ value: Set<String>) { bulkPullOmits = value }
     func setHasChecksumTool(_ value: Bool) { hasChecksumTool = value }
     func setTruncateSupported(_ value: Bool) { truncateSupported = value }
     func contents(of path: String) -> Data? { files[path] }
@@ -212,6 +223,23 @@ actor FakeTransport: DeviceTransport {
             index = end
         }
         return true
+    }
+
+    func bulkPull(_ requests: [BulkPullRequest],
+                  progress: @escaping @Sendable (Int64) -> Void) async throws -> Set<RemotePath> {
+        guard supportsBulkPull else { return [] }
+        bulkPullSizes.append(requests.count)
+
+        var delivered: Set<RemotePath> = []
+        for request in requests {
+            try Task.checkCancellation()
+            guard !bulkPullOmits.contains(request.path.string),
+                  let data = files[request.path.string] else { continue }
+            FileManager.default.createFile(atPath: request.localURL.path, contents: data)
+            delivered.insert(request.path)
+            progress(Int64(data.count))
+        }
+        return delivered
     }
 
     func writeFile(from localURL: URL, to path: RemotePath, destinationOffset: Int64,

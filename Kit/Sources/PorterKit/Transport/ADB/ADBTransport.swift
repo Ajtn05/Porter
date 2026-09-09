@@ -390,6 +390,113 @@ public actor ADBTransport: DeviceTransport {
         return true
     }
 
+    /// Copies many files with one `adb pull` rather than one each.
+    ///
+    /// `adb pull` takes a list of remote paths and a local directory, so the
+    /// whole batch costs the one process and the one device round trip that a
+    /// single file used to. The files land under their own names in a staging
+    /// directory and are then renamed onto the sidecars the caller asked for.
+    ///
+    /// The staging directory is made inside the destination directory rather
+    /// than in the system temporary one, so the rename out of it is a rename
+    /// and not a copy onto another volume.
+    public func bulkPull(_ requests: [BulkPullRequest],
+                         progress: @escaping @Sendable (Int64) -> Void) async throws -> Set<RemotePath> {
+        var delivered: Set<RemotePath> = []
+        // Grouped by where the bytes are going, because one `adb pull` writes
+        // into one directory.
+        let byDestination = Dictionary(grouping: requests) { $0.localURL.deletingLastPathComponent().path }
+
+        for group in byDestination.values {
+            for batch in Self.pullBatches(group) {
+                try Task.checkCancellation()
+                delivered.formUnion(try await pullBatch(batch, progress: progress))
+            }
+        }
+        return delivered
+    }
+
+    private func pullBatch(_ batch: [BulkPullRequest],
+                           progress: @escaping @Sendable (Int64) -> Void) async throws -> Set<RemotePath> {
+        guard let destination = batch.first?.localURL.deletingLastPathComponent() else { return [] }
+
+        let fileManager = FileManager.default
+        let staging = destination.appendingPathComponent(".porter-batch-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: staging) }
+
+        let pullTask = Task { [adbURL, serial] in
+            try await ProcessRunner.run(
+                executable: adbURL,
+                arguments: ["-s", serial, "pull"] + batch.map(\.path.string) + [staging.path],
+                timeout: nil
+            )
+        }
+        // As in `fastPull`: awaiting an unstructured task is not itself
+        // cancellable, and without this a pause would wait out the whole batch.
+        let result = try await withTaskCancellationHandler {
+            try await pullTask.value
+        } onCancel: {
+            pullTask.cancel()
+        }
+        try Task.checkCancellation()
+
+        // A non-zero exit is not fatal to the batch. adb reports a file it
+        // could not read and carries on with the rest, so what actually landed
+        // in the staging directory decides; the rest are reported as not
+        // delivered and the caller copies them singly.
+        _ = result
+
+        var delivered: Set<RemotePath> = []
+        for request in batch {
+            let staged = staging.appendingPathComponent(request.path.name)
+            guard let size = (try? fileManager.attributesOfItem(atPath: staged.path))?[.size] as? NSNumber
+            else { continue }
+
+            try? fileManager.removeItem(at: request.localURL)
+            do {
+                try fileManager.moveItem(at: staged, to: request.localURL)
+            } catch {
+                continue
+            }
+            delivered.insert(request.path)
+            progress(size.int64Value)
+        }
+        return delivered
+    }
+
+    /// Splits a batch into `adb pull` command lines, on the same argument
+    /// budget the hashing batches use.
+    ///
+    /// Two files with the same name cannot share a batch: `adb pull` writes
+    /// both under that name in the staging directory, so the second would
+    /// overwrite the first. The repeat goes into a later batch instead.
+    static func pullBatches(_ requests: [BulkPullRequest]) -> [[BulkPullRequest]] {
+        let byteLimit = 8 * 1024
+        let countLimit = 64
+
+        var batches: [[BulkPullRequest]] = []
+        var current: [BulkPullRequest] = []
+        var names: Set<String> = []
+        var length = 0
+
+        for request in requests {
+            let cost = request.path.string.utf8.count + 1
+            let collides = names.contains(request.path.name)
+            if !current.isEmpty && (collides || current.count >= countLimit || length + cost > byteLimit) {
+                batches.append(current)
+                current = []
+                names = []
+                length = 0
+            }
+            current.append(request)
+            names.insert(request.path.name)
+            length += cost
+        }
+        if !current.isEmpty { batches.append(current) }
+        return batches
+    }
+
     public func writeFile(
         from localURL: URL,
         to path: RemotePath,

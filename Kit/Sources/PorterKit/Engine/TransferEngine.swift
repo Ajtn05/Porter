@@ -44,6 +44,10 @@ public actor TransferEngine {
     /// device and then by remote path. Filled a batch at a time by
     /// `deviceChecksum(for:using:)` and read exactly once per entry.
     private var checksumCache: [DeviceID: [RemotePath: Checksum]] = [:]
+    /// The batch read currently fetching each path, so a file dispatched while
+    /// a batch is already fetching it waits for that batch instead of starting
+    /// a second copy onto the same sidecar.
+    private var bulkPullTasks: [RemotePath: Task<Void, Never>] = [:]
 
     private var continuations: [UUID: AsyncStream<TransferEvent>.Continuation] = [:]
 
@@ -65,6 +69,13 @@ public actor TransferEngine {
     /// How many hashes to ask for in one call. The transport splits this again
     /// to fit the device's command line.
     private static let checksumBatchLimit = 64
+
+    /// Files at or below this size are read in a batch, on the same reasoning
+    /// as the hashes: below it the round trip costs more than the bytes do.
+    private static let bulkPullSizeLimit: Int64 = 8 * 1024 * 1024
+    /// How many files to read in one batch. The transport splits this again to
+    /// fit the device's command line.
+    private static let bulkPullLimit = 64
 
     public init(queue: TransferQueue, resolver: any TransportResolver,
                 maximumConcurrency: Int = 3, verifiesChecksums: Bool = true,
@@ -146,6 +157,8 @@ public actor TransferEngine {
         tasks.removeAll()
         running.removeAll()
         checksumCache.removeAll()
+        for batch in bulkPullTasks.values { batch.cancel() }
+        bulkPullTasks.removeAll()
         await queue.flush()
         await emitSummary()
     }
@@ -222,7 +235,7 @@ public actor TransferEngine {
             if isPaused { return }
             guard running.count < maximumConcurrency,
                   let next = await queue.nextQueued(excluding: running),
-                  hasCapacity(forDevice: next.deviceID) else {
+                  await hasCapacity(forDevice: next.deviceID) else {
                 if running.isEmpty {
                     // Nothing left to share a call with, and a prefetched hash
                     // describes the device as it was when it was taken.
@@ -244,7 +257,19 @@ public actor TransferEngine {
     }
 
     /// Whether another stream to this device would exceed its transport's limit.
-    private func hasCapacity(forDevice deviceID: DeviceID) -> Bool {
+    ///
+    /// Resolves the transport when the limit is not yet known rather than
+    /// assuming there is none. The limit used to be learned only once an item
+    /// was already executing, which left the first pass through the pump free
+    /// to dispatch a second file to a device that allows one; MTP is the case
+    /// that cannot take it. The resolver caches, so this costs a lookup after
+    /// the first call, and a resolve that fails leaves the limit unknown and
+    /// the failure to be reported by the item itself.
+    private func hasCapacity(forDevice deviceID: DeviceID) async -> Bool {
+        if transportLimits[deviceID] == nil,
+           let transport = try? await resolver.transport(for: deviceID) {
+            transportLimits[deviceID] = transport.capabilities.maximumConcurrentStreams
+        }
         guard let limit = transportLimits[deviceID] else { return true }
         return (runningDevices[deviceID] ?? 0) < limit
     }
@@ -342,6 +367,14 @@ public actor TransferEngine {
         try fileManager.createDirectory(at: item.localURL.deletingLastPathComponent(),
                                         withIntermediateDirectories: true)
 
+        // A batch read may have landed this file whole already, either one this
+        // call starts or one an earlier file started. Verification and placing
+        // are unchanged either way.
+        if try await bulkPulled(item, to: partialURL, using: transport) {
+            try await finishPull(item, partialURL: partialURL, transport: transport)
+            return
+        }
+
         // Resume from whatever the sidecar already holds, rounded down to a
         // block boundary to keep the ranged read aligned.
         var resumeOffset = existingSize(at: partialURL)
@@ -397,6 +430,89 @@ public actor TransferEngine {
         try handle.close()
 
         try await finishPull(item, partialURL: partialURL, transport: transport)
+    }
+
+    /// Reads this file, and the small pulls queued behind it, in one call.
+    ///
+    /// Returns whether the sidecar holds the whole file afterwards, so the
+    /// caller can go straight to verification. False means nothing was
+    /// batched and the file is to be copied on its own.
+    ///
+    /// Progress is reported to the throughput meter as each file lands rather
+    /// than as bytes arrive, so a batch moves the rate in steps. That is worth
+    /// the trade only for files small enough that a step is brief, which is
+    /// what `bulkPullSizeLimit` bounds.
+    private func bulkPulled(_ item: TransferItem, to partialURL: URL,
+                            using transport: any DeviceTransport) async throws -> Bool {
+        if isComplete(partialURL, for: item) { return true }
+        guard item.totalBytes > 0, item.totalBytes <= Self.bulkPullSizeLimit else { return false }
+
+        if let inFlight = bulkPullTasks[item.remotePath] {
+            await inFlight.value
+            return isComplete(partialURL, for: item)
+        }
+
+        let candidates = await queue.orderedItems
+        // Re-checked after the await: a batch claiming this path could have
+        // started while the queue was being read.
+        if let inFlight = bulkPullTasks[item.remotePath] {
+            await inFlight.value
+            return isComplete(partialURL, for: item)
+        }
+
+        // No await between choosing the paths and claiming them, so two files
+        // dispatched at once cannot both claim the same one.
+        let requests = bulkPullRequests(for: item, among: candidates)
+        guard requests.count > 1 else { return false }
+
+        let task = Task { [transport] in
+            _ = try? await transport.bulkPull(requests) { [weak self] delta in
+                Task { await self?.recordThroughput(delta) }
+            }
+        }
+        for request in requests { bulkPullTasks[request.path] = task }
+        await task.value
+        for request in requests where bulkPullTasks[request.path] == task {
+            bulkPullTasks[request.path] = nil
+        }
+
+        return isComplete(partialURL, for: item)
+    }
+
+    /// The item plus the other small pulls waiting on the same device, skipping
+    /// any path a batch already has in hand.
+    ///
+    /// Synchronous on purpose: the caller claims what this returns, and an
+    /// await in between would let a second batch claim the same paths.
+    private func bulkPullRequests(for item: TransferItem,
+                                  among candidates: [TransferItem]) -> [BulkPullRequest] {
+        var requests = [BulkPullRequest(path: item.remotePath, localURL: item.localPartialURL)]
+        var seen: Set<RemotePath> = [item.remotePath]
+
+        for other in candidates {
+            guard requests.count < Self.bulkPullLimit else { break }
+            guard other.id != item.id,
+                  other.deviceID == item.deviceID,
+                  other.direction == .pull,
+                  !other.isDirectoryPlaceholder,
+                  other.totalBytes > 0,
+                  other.totalBytes <= Self.bulkPullSizeLimit,
+                  // Only what is still waiting: a running file has its own copy
+                  // under way, and a paused one must keep the partial it has.
+                  other.state == .queued,
+                  bulkPullTasks[other.remotePath] == nil,
+                  seen.insert(other.remotePath).inserted else { continue }
+            requests.append(BulkPullRequest(path: other.remotePath, localURL: other.localPartialURL))
+        }
+        return requests
+    }
+
+    /// Whether the sidecar already holds the whole file.
+    ///
+    /// An exact match only. A sidecar longer than the file is a stale artifact
+    /// rather than a finished copy, and the resume path restarts it.
+    private func isComplete(_ partialURL: URL, for item: TransferItem) -> Bool {
+        item.totalBytes > 0 && existingSize(at: partialURL) == item.totalBytes
     }
 
     private func fastPull(_ item: TransferItem, to partialURL: URL,

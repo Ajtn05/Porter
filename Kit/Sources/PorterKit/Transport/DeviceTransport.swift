@@ -33,6 +33,22 @@ public struct TransportCapabilities: Hashable, Sendable {
     }
 }
 
+/// One file in a batched read: where it is on the device, and where its bytes
+/// are to land on the Mac.
+///
+/// The local URL is the caller's sidecar rather than the final name, so a
+/// batch that is interrupted leaves the same recognisable partials a
+/// file-at-a-time copy would.
+public struct BulkPullRequest: Hashable, Sendable {
+    public let path: RemotePath
+    public let localURL: URL
+
+    public init(path: RemotePath, localURL: URL) {
+        self.path = path
+        self.localURL = localURL
+    }
+}
+
 /// The one abstraction the rest of the app talks to.
 ///
 /// The user picks a device, not a protocol; everything above this line is
@@ -74,6 +90,23 @@ public protocol DeviceTransport: Sendable {
         to localURL: URL,
         progress: @escaping @Sendable (Int64) -> Void
     ) async throws -> Bool
+
+    /// Copies several whole files off the device in as few commands as it can,
+    /// returning the paths it delivered.
+    ///
+    /// The same argument as `checksums`: for a small file the cost is the
+    /// round trip and the process spawned for it, not the bytes. `fastPull`
+    /// already avoids the streaming penalty but still pays that cost once per
+    /// file, which is what holds a folder of thumbnails far below the rate a
+    /// single large file gets.
+    ///
+    /// A path absent from the returned set was not delivered and is left to be
+    /// copied on its own; a transport with no batch path returns none of them,
+    /// which is the default.
+    func bulkPull(
+        _ requests: [BulkPullRequest],
+        progress: @escaping @Sendable (Int64) -> Void
+    ) async throws -> Set<RemotePath>
 
     /// Copies a local file onto the device.
     ///
@@ -130,6 +163,12 @@ public extension DeviceTransport {
     func fastPull(_ path: RemotePath, to localURL: URL,
                   progress: @escaping @Sendable (Int64) -> Void) async throws -> Bool {
         false
+    }
+
+    /// No batch read path by default, so the engine copies one file at a time.
+    func bulkPull(_ requests: [BulkPullRequest],
+                  progress: @escaping @Sendable (Int64) -> Void) async throws -> Set<RemotePath> {
+        []
     }
 
     /// One call per path, for transports with no way to hash a list at once.
