@@ -3,112 +3,73 @@
 
 # Porter
 
-A free, native macOS app for moving files to and from an Android phone, over a
-cable or over Wi-Fi
+A free, native macOS app for moving files to and from an Android phone over a
+USB cable. It supports both USB debugging (ADB) and the standard Android file
+transfer mode (MTP), so USB debugging is optional.
 
-Google discontinued Android File Transfer in May 2024 and most alternatives are either paid, bloated, or look outdated. This aims to replace all that. With this service, the phone behaves like a drive with  transfers
-resuming when connection is interrupted, and every file is checksum-verified.
+Google discontinued Android File Transfer in May 2024 and most alternatives are either paid, bloated, or look outdated. This aims to replace all that. The phone behaves like a drive, with resumable and checksum-verified ADB transfers plus a standard MTP fallback when USB debugging is off.
 </div>
 
 ## Status
 
-Early functionality works on testing with a Galaxy S22 on Android 16: browse,
-copy, resume, verify, over USB with `adb`.
+Early functionality has been tested with a Galaxy S22 on Android 16. It can
+browse and copy over USB debugging (ADB) or normal File Transfer mode (MTP).
 
 
-**Works:** device discovery over the USB bus, including telling a phone in
-file-transfer mode from one that is only charging. Full filesystem browse.
-Copying in both directions with a durable queue, block-aligned resume, and
-SHA-256 verification of every file. Conflict handling, filename sanitising, and
-preflight checks for free space and the FAT32 4 GiB ceiling.
+**Works:** USB discovery identifies file-transfer mode separately from
+charge-only mode. When a phone is available through both cable transports,
+Porter uses the faster ADB connection; when it is only in File Transfer mode,
+it falls back to MTP automatically. Both transports support volume and folder
+browsing, creating folders, deleting, renaming, moving within a volume, and
+copying files in both directions. Conflict handling, filename sanitising, and
+the available preflight checks for free space and the FAT32 4 GiB ceiling are
+shared by the transfer engine.
 
-**Statistics:** 30 MB/s against a 37.6 MB/s `adb pull` baseline, with checksum
-verification. 3 GB / 716-file batch completed with
-716 verified and 0 failures.
+ADB transfers have block-aligned resume, modification-date preservation, and
+SHA-256 verification against the device. Small ADB files are batched for both
+pulling and hashing: files at or below 8 MiB can share one `adb pull` and one
+`sha256sum` call instead of paying two round trips per file.
+
+**Measured with ADB:** 30 MB/s against a 37.6 MB/s `adb pull` baseline, with
+checksum verification. A 3 GB / 716-file batch completed with 716 verified
+and no failures. The small-file batching implementation is covered by fake
+device tests; its real-device throughput still needs measuring.
 
 
-**Not finished, in the order it is being done:**
+## MTP, without USB debugging
 
-1. **MTP** — the transport for phones without USB debugging, which is a developer
-   option, and one that utility apps with strict security such as banking apps
-   will flag when it is on. This is the gap that decides whether the app works for
-   anyone who is not a developer, so it goes first. The wire protocol, the session
-   layer, and the USB pipe under them are all written; the pipe is blocked on
-   macOS itself, described below.
+MTP is the fallback for a wired phone that is in File Transfer mode but has not
+enabled USB debugging. Porter implements the MTP wire protocol, USB bulk pipe,
+and session layer directly. Its transactions are serialised, so a quick folder
+change cannot consume another request's reply.
 
-   **The `ptpcamerad` problem.** MTP rides on the USB still-image interface,
-   class 6/1/1. macOS opens that interface on anything publishing one, through
-   `/usr/libexec/ptpcamerad`, and holds it for as long as the phone is plugged
-   in. The open is exclusive, so `USBInterfaceOpen` returns
-   `kIOReturnExclusiveAccess`. Measured on a Galaxy S22, every way around it
-   fails:
+MTP has protocol limits that Porter exposes rather than conceals: one transfer
+runs at a time; interrupted transfers restart rather than resume; device-side
+checksums are unavailable, so completed transfers are marked unverified; and
+modification-date preservation and free-space or file-size reports are best
+effort. Enable USB debugging when resumable, checksum-verified transfers are
+more important than avoiding the developer option.
 
-   - `USBInterfaceOpenSeize`, the documented way to take an interface from
-     another user-space client, returns the same error.
-   - Opening the parent `IOUSBHostDevice` first succeeds and changes nothing.
-   - `SetConfiguration` to the value already set is a no-op in
-     `IOUSBHostFamily`, so it does not rebuild the interface nubs.
-   - `ptpcamerad` is protected by System Integrity Protection: `kill` returns 0
-     and the process does not die.
-   - ImageCaptureCore, which would be the supported way to send PTP through
-     `ptpcamerad` rather than around it, does not publish the phone at all.
-     `ICDeviceBrowser` reports zero devices while `ptpcamerad` holds the
-     interface, so `ICCameraDevice.requestSendPTPCommand` has nothing to send
-     to.
+macOS normally gives the MTP interface to `ptpcamerad`, and that exclusive
+claim cannot be taken back. Porter starts an interface claimer with the app and
+races it when the phone is attached. Start Porter before connecting the phone;
+if another process wins, unplug and reconnect it. `porterctl mtp` identifies
+the process holding the interface, and `porterctl mtp-watch` reports the result
+of each attach. Porter only claims known Android phones, never cameras. While
+it holds a phone's MTP interface, Photos and Image Capture cannot use that
+phone until it is unplugged.
 
-   What is left is a race. Both processes are woken by the same match
-   notification, and whoever calls `USBInterfaceOpen` first keeps the interface
-   until the cable is pulled. `MTPInterfaceClaimer` enters that race: it
-   registers `kIOFirstMatchNotification` narrowed to the still-image class and
-   opens the interface inside the callback, with only a vendor check in
-   between. It is started by `DeviceCoordinator.start()`, so it is armed for the
-   life of the app; a phone already attached at launch is always lost, and only
-   a replug can be won. Claims are held for the whole attachment and lent to
-   `MTPUSBPipe`, which gives them back rather than closing them, because a
-   closed interface goes straight back to `ptpcamerad`.
+## Next
 
-   Only phones are claimed, never cameras: `AndroidVendorIDs` gates it, so
-   importing from a DSLR in Image Capture is untouched. Importing from a
-   *phone* is not — while Porter holds the interface, Photos and Image Capture
-   cannot see it. That is the trade.
+1. **Android companion app for Wi-Fi.** `WiFiTransport` and its protocol are
+   implemented on macOS, but there is no Android server yet.
+2. **File Provider extension.** This would put the phone in the Finder sidebar.
+   The sandboxed extension must proxy ADB work to the main app over XPC.
+3. **Phase 3:** photo import, watched folders, and APK sideloading.
 
-   Where the race is lost, `MTPTransport` fails with an error naming the
-   process that won it, read from the interface's own `UsbExclusiveOwner`
-   property rather than guessed at. `porterctl mtp` prints that for the
-   attached phone; `porterctl mtp-watch` sits on the notification and reports
-   who won each attach, which is how the race is measured.
-2. **Batching small files.** Written, and verified against the fake device
-   rather than a phone. Per-file overhead was about 145 ms, charged per call
-   rather than per byte, which is what held a folder of thumbnails to 8 MB/s
-   while a single large file managed 30.
-
-   It was two round trips a file: one `adb pull`, one `adb shell sha256sum`.
-   Both are now batched, on the same demand-driven shape. The first small file
-   dispatched fetches the small pulls queued behind it, and the first to reach
-   verification hashes them, so the rest find their sidecar whole and their
-   hash cached. `adb pull` takes a list of paths and a directory, and
-   `sha256sum` takes a list, so each batch is one process and one round trip.
-   Files above 8 MiB are still handled one at a time, where the device reading
-   the file dwarfs the round trip.
-
-   Over a 40-file folder that is one read call and one hash call against 40 of
-   each. What is left is measuring it on the Galaxy S22: the call counts are
-   what the tests pin, not the resulting MB/s.
-3. **The Android companion app** for Wi-Fi. Not started. `WiFiTransport` is
-   already complete against `WiFiProtocol.swift` and simply has no server to talk
-   to. Third rather than first because it is a whole second codebase in a second
-   language, and the USB side should be honestly done before that starts.
-4. **The File Provider extension** (phone in the Finder sidebar). Not started.
-   Note before attempting it: the extension is sandboxed and therefore cannot
-   spawn `adb`, so it has to proxy to the main app over XPC.
-
-Behind those: **Phase 3** — photo import, watched folders, APK sideloading. Not
-started. **Signing and notarisation**, and bundling `adb` (see `Scripts/`), are
-release work rather than a phase, and block only the first build handed to
-somebody else.
-
-Sustained multi-hour throughput is untested; it drops under load as the phone
-throttles.
+Signing, notarisation, and bundling `adb` are release work needed before the
+first build is handed to somebody else. Sustained multi-hour throughput also
+needs testing; it falls as the phone throttles under load.
 
 ## Layout
 
@@ -121,7 +82,7 @@ Kit/                    Swift package - all the logic, no UI
     Discovery/          USB bus watching and device merging
     Support/            Checksums, sanitising, throughput
   Sources/porterctl/       Read-only diagnostic CLI
-  Tests/                165 tests
+  Tests/                171 tests
 App/                    The SwiftUI app
 project.yml             XcodeGen input; generates Porter.xcodeproj
 ```
@@ -181,29 +142,32 @@ R5CT502XWRL  SM S901E  [adb]  ready
     usb 04e8:6860  interfaces: 6/1/1 2/2/1 10/0/0 255/66/1
 ```
 
-Interface numbers are how the app tells a phone in file-transfer mode from
-one that is only charging 
+Interface numbers let the app distinguish a phone in file-transfer mode from
+one that is only charging.
 
 Other commands: `volumes`, `ls`, `biggest`, `pull`, `pull-tree`, `resume-test`,
 `checksum`, and `mtp`, which drives the MTP transport directly and reports what
-is holding the still-image interface.
+is holding the still-image interface. `mtp-watch` reports whether Porter won
+that interface on each subsequent attach. The two MTP commands do not use ADB.
 
 ## Decision Considerations
 
-**Transport and Interface.** `ADBTransport` is defaulted as it is the only
-one that can seek within a file, hash a file in place, report honest sizes, and
-set an mtime. `WiFiTransport` talks to a companion Android app. `MTPTransport`
-is the fallback for phones without USB debugging. Each publishes a
-`TransportCapabilities`, and the engine reads that instead of switching on the
-transport kind. 
+**Transport and interface.** `ADBTransport` is preferred because it can seek
+within a file, hash a file in place, report reliable sizes, and set an mtime.
+`MTPTransport` is the direct USB fallback for phones without USB debugging.
+`WiFiTransport` speaks to the future companion Android app. Each publishes
+`TransportCapabilities`, and the engine reads those rather than switching on
+the transport kind.
 
-**Partial files.** In-flight bytes live in a `.porterpart`
-sidecar. The real filename only appears once the file is whole and verified. Pulling
-the cable leaves a recognizable relaunch resume point.
+**Partial files.** In-flight bytes live in a `.porterpart` sidecar. The real
+filename only appears once the file is complete. ADB can resume an aligned
+partial after a disconnect; MTP deliberately restarts it because ranged reads
+and resumable writes are not dependable across Android MTP implementations.
 
-**Verification.** The device hashes its own copy with `sha256sum`, we
-hash ours, and a mismatch discards the result. When a device has no hashing tool
-the app completes the copy and says the file was *not* verified.
+**Verification.** With ADB, the device hashes its own copy with `sha256sum`,
+Porter hashes its copy, and a mismatch discards the result. MTP has no
+device-side checksum operation, so an MTP transfer can complete but is marked
+*unverified*.
 
 
 
