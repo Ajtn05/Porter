@@ -77,8 +77,23 @@ verification. 3 GB / 716-file batch completed with
    property rather than guessed at. `porterctl mtp` prints that for the
    attached phone; `porterctl mtp-watch` sits on the notification and reports
    who won each attach, which is how the race is measured.
-2. **Batching small files.** Per-file overhead is about 145 ms and dominates a
-   folder of thumbnails; it is what holds a large run to 8 MB/s.
+2. **Batching small files.** Written, and verified against the fake device
+   rather than a phone. Per-file overhead was about 145 ms, charged per call
+   rather than per byte, which is what held a folder of thumbnails to 8 MB/s
+   while a single large file managed 30.
+
+   It was two round trips a file: one `adb pull`, one `adb shell sha256sum`.
+   Both are now batched, on the same demand-driven shape. The first small file
+   dispatched fetches the small pulls queued behind it, and the first to reach
+   verification hashes them, so the rest find their sidecar whole and their
+   hash cached. `adb pull` takes a list of paths and a directory, and
+   `sha256sum` takes a list, so each batch is one process and one round trip.
+   Files above 8 MiB are still handled one at a time, where the device reading
+   the file dwarfs the round trip.
+
+   Over a 40-file folder that is one read call and one hash call against 40 of
+   each. What is left is measuring it on the Galaxy S22: the call counts are
+   what the tests pin, not the resulting MB/s.
 3. **The Android companion app** for Wi-Fi. Not started. `WiFiTransport` is
    already complete against `WiFiProtocol.swift` and simply has no server to talk
    to. Third rather than first because it is a whole second codebase in a second
@@ -106,7 +121,7 @@ Kit/                    Swift package - all the logic, no UI
     Discovery/          USB bus watching and device merging
     Support/            Checksums, sanitising, throughput
   Sources/porterctl/       Read-only diagnostic CLI
-  Tests/                141 tests
+  Tests/                165 tests
 App/                    The SwiftUI app
 project.yml             XcodeGen input; generates Porter.xcodeproj
 ```
