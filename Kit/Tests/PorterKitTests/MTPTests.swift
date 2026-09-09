@@ -277,6 +277,58 @@ struct MTPSessionTests {
         #expect(try MTPContainerHeader.decode(written[1]).code == MTPOperation.openSession.rawValue)
     }
 
+    /// Builds one GetObjectPropList row pair: a name and a format for `handle`.
+    private func propListRows(_ writer: inout MTPWriter, handle: UInt32,
+                              name: String, isFolder: Bool) {
+        writer.uint32(handle)
+        writer.uint16(MTPObjectProperty.objectFileName)
+        writer.uint16(0xFFFF)
+        writer.string(name)
+
+        writer.uint32(handle)
+        writer.uint16(MTPObjectProperty.objectFormat)
+        writer.uint16(0x0004)
+        writer.uint16(isFolder ? MTPObjectFormat.association : MTPObjectFormat.undefined)
+    }
+
+    @Test("Regression: a folder is not listed as a child of itself")
+    func propertyListDropsTheParentRow() async throws {
+        // GetObjectPropList at depth 1 answers with the folder that was asked
+        // about as well as its children, because Android adds the requested
+        // object before it walks down a level. Kept, it reaches the browser as
+        // a child of itself: entering it re-lists the same folder, and every
+        // click stacks another copy on the breadcrumb without going anywhere.
+        var writer = MTPWriter()
+        writer.uint32(4)
+        propListRows(&writer, handle: 100, name: "Alarms", isFolder: true)
+        propListRows(&writer, handle: 101, name: "alarm.ogg", isFolder: false)
+
+        let (session, _) = try await openedSession([
+            MTPWire.data(.getObjectPropList, transaction: 1, payload: writer.data),
+            MTPWire.response(.ok, transaction: 1)
+        ])
+
+        let children = try await session.children(ofParent: 100, storage: 65537)
+        #expect(children?.map(\.name) == ["alarm.ogg"])
+    }
+
+    @Test("Regression: an empty folder lists as empty, not as holding itself")
+    func emptyFolderDoesNotListItself() async throws {
+        var writer = MTPWriter()
+        writer.uint32(2)
+        propListRows(&writer, handle: 100, name: "Alarms", isFolder: true)
+
+        let (session, _) = try await openedSession([
+            MTPWire.data(.getObjectPropList, transaction: 1, payload: writer.data),
+            MTPWire.response(.ok, transaction: 1)
+        ])
+
+        // Empty rather than nil: the phone answered, and it said there is
+        // nothing in there. Nil would send the caller down the slow path to be
+        // told the same thing a second time.
+        #expect(try await session.children(ofParent: 100, storage: 65537)?.isEmpty == true)
+    }
+
     @Test("A data phase split across several bulk reads is reassembled")
     func splitDataPhase() async throws {
         let payload = MTPWire.uint32Array([65537, 65538])

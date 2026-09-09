@@ -525,6 +525,14 @@ public extension MTPSession {
         var objects: [MTPObject] = []
         objects.reserveCapacity(table.count)
         for (handle, properties) in table {
+            // The reply carries the folder that was asked about as well as its
+            // children. Android adds the requested object to the list first and
+            // only then walks down a level, so at depth 1 the parent is always
+            // row one. Left in, it shows up in the browser as a child of
+            // itself: entering it re-lists the same folder, and every click
+            // adds another copy to the breadcrumb without ever going anywhere.
+            guard handle != parent else { continue }
+
             let name = properties[MTPObjectProperty.objectFileName]?.string
                 ?? properties[MTPObjectProperty.name]?.string
             // Without a name there is no path to put it at, so it is not
