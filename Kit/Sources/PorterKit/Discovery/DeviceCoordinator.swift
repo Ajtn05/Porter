@@ -17,7 +17,13 @@ public actor DeviceCoordinator: TransportResolver {
     /// Nil while adb is present; set to a user-facing explanation when it is not.
     public private(set) var adbUnavailableReason: String?
 
-    public init(adbURL: URL? = nil) {
+    /// How the USB bus is read. Injected so the refresh path can be exercised
+    /// without a phone on the other end of a cable.
+    private let readUSB: @Sendable () -> [USBDeviceMonitor.Snapshot]
+
+    public init(adbURL: URL? = nil,
+                readUSB: (@Sendable () -> [USBDeviceMonitor.Snapshot])? = nil) {
+        self.readUSB = readUSB ?? { USBDeviceMonitor.currentDevices() }
         self.adbURL = adbURL ?? ADBLocator.locate()
         if self.adbURL == nil {
             adbUnavailableReason = "adb was not found, so devices without USB debugging will use the slower file-transfer mode."
@@ -76,6 +82,17 @@ public actor DeviceCoordinator: TransportResolver {
     }
 
     public func refresh() async {
+        // Re-read the bus rather than trusting the last notification. The USB
+        // monitor only publishes on a change it was told about, and a phone
+        // that finished publishing its interfaces a moment after its device nub
+        // appeared produces no second notification. Without this the phone is
+        // stuck at whatever it looked like in that first instant, which for
+        // file-transfer mode is no interfaces at all, and so charge-only.
+        //
+        // One registry pass, on the same two-second tick that already polls
+        // adb.
+        usbSnapshots = readUSB()
+
         var adbListings: [ADBParsing.DeviceListing] = []
         if let adbURL {
             adbListings = (try? await ADBTransport.listDevices(adbURL: adbURL)) ?? []

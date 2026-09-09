@@ -166,3 +166,75 @@ struct TransportCapabilityTests {
         #expect(TransportKind.wifi < TransportKind.mtp)
     }
 }
+
+/// A stand-in for the USB bus whose answer changes between reads, which is what
+/// a phone finishing its enumeration looks like from here.
+private final class StubBus: @unchecked Sendable {
+    private let lock = NSLock()
+    private var snapshots: [USBDeviceMonitor.Snapshot]
+    private(set) var readCount = 0
+
+    init(_ initial: [USBDeviceMonitor.Snapshot]) { snapshots = initial }
+
+    func set(_ value: [USBDeviceMonitor.Snapshot]) {
+        lock.lock(); snapshots = value; lock.unlock()
+    }
+
+    func read() -> [USBDeviceMonitor.Snapshot] {
+        lock.lock(); defer { lock.unlock() }
+        readCount += 1
+        return snapshots
+    }
+}
+
+@Suite("Discovery refresh")
+struct DiscoveryRefreshTests {
+
+    @Test("Regression: a phone whose interfaces appeared late stops being charge-only")
+    func lateInterfacesAreNoticed() async throws {
+        // A device nub is registered before its configuration is set, so the
+        // bus can report a phone with no interfaces at all for a moment. That
+        // reads as charge-only, and it used to stick: the poll re-read adb but
+        // reused the USB snapshot it was handed when the device first matched,
+        // so a phone in file-transfer mode stayed wrongly charge-only for as
+        // long as it was plugged in.
+        let bus = StubBus([usbSnapshot(serial: "R5CT502XWRL", interfaces: [])])
+        let coordinator = DeviceCoordinator(adbURL: nil, readUSB: { bus.read() })
+
+        await coordinator.refresh()
+        #expect(await coordinator.currentDevices().first?.readiness == .chargingOnly)
+
+        // The interfaces finish publishing. No notification follows, because
+        // the device itself did not change.
+        bus.set([usbSnapshot(serial: "R5CT502XWRL", interfaces: [mtpInterface])])
+        await coordinator.refresh()
+
+        let device = try #require(await coordinator.currentDevices().first)
+        #expect(device.readiness == .ready)
+        #expect(device.transport == .mtp)
+    }
+
+    @Test("A refresh reads the bus rather than a cached snapshot")
+    func refreshReadsTheBus() async throws {
+        let bus = StubBus([usbSnapshot(serial: "ABC123", interfaces: [mtpInterface])])
+        let coordinator = DeviceCoordinator(adbURL: nil, readUSB: { bus.read() })
+
+        await coordinator.refresh()
+        await coordinator.refresh()
+
+        #expect(bus.readCount == 2)
+    }
+
+    @Test("A phone that goes away is dropped on the next refresh")
+    func unpluggedDeviceDisappears() async throws {
+        let bus = StubBus([usbSnapshot(serial: "ABC123", interfaces: [mtpInterface])])
+        let coordinator = DeviceCoordinator(adbURL: nil, readUSB: { bus.read() })
+
+        await coordinator.refresh()
+        #expect(await coordinator.currentDevices().count == 1)
+
+        bus.set([])
+        await coordinator.refresh()
+        #expect(await coordinator.currentDevices().isEmpty)
+    }
+}

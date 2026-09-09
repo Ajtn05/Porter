@@ -21,6 +21,8 @@ public final class USBDeviceMonitor: @unchecked Sendable {
     private var notifyPort: IONotificationPortRef?
     private var addedIterator: io_iterator_t = 0
     private var removedIterator: io_iterator_t = 0
+    private var addedInterfaceIterator: io_iterator_t = 0
+    private var removedInterfaceIterator: io_iterator_t = 0
     private var handler: (@Sendable ([Snapshot]) -> Void)?
 
     public init() {}
@@ -64,8 +66,32 @@ public final class USBDeviceMonitor: @unchecked Sendable {
                 callback, context, &removedIterator
             )
 
+            // Interfaces as well as devices. A device nub is registered
+            // before its configuration is set, and the interface nubs are
+            // created only after that, so the snapshot taken when the device
+            // matched can hold no interfaces at all and read as charge-only.
+            // Nothing else would re-fire, and the phone would stay wrongly
+            // charge-only for as long as it stayed plugged in.
+            //
+            // These match every interface on the machine, not just a phone's.
+            // That is deliberate: the callback only re-reads the bus, and the
+            // coordinator drops a snapshot that changed nothing, so a keyboard
+            // waking this costs one registry pass.
+            _ = IOServiceAddMatchingNotification(
+                port, kIOMatchedNotification,
+                IOServiceMatching(kIOUSBHostInterfaceClassName),
+                callback, context, &addedInterfaceIterator
+            )
+            _ = IOServiceAddMatchingNotification(
+                port, kIOTerminatedNotification,
+                IOServiceMatching(kIOUSBHostInterfaceClassName),
+                callback, context, &removedInterfaceIterator
+            )
+
             drain(addedIterator)
             drain(removedIterator)
+            drain(addedInterfaceIterator)
+            drain(removedInterfaceIterator)
             publish()
         }
     }
@@ -77,6 +103,8 @@ public final class USBDeviceMonitor: @unchecked Sendable {
     private func stopUnsafely() {
         if addedIterator != 0 { IOObjectRelease(addedIterator); addedIterator = 0 }
         if removedIterator != 0 { IOObjectRelease(removedIterator); removedIterator = 0 }
+        if addedInterfaceIterator != 0 { IOObjectRelease(addedInterfaceIterator); addedInterfaceIterator = 0 }
+        if removedInterfaceIterator != 0 { IOObjectRelease(removedInterfaceIterator); removedInterfaceIterator = 0 }
         if let notifyPort { IONotificationPortDestroy(notifyPort) }
         notifyPort = nil
         handler = nil
