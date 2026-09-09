@@ -38,6 +38,11 @@ public actor DeviceCoordinator: TransportResolver {
     private func dropStream(_ id: UUID) { continuations[id] = nil }
 
     public func start() {
+        // Before the bus monitor, and before anything else: the MTP interface
+        // has to be claimed in the same instant it is published or macOS takes
+        // it. Starting the claimer here means it is armed for the whole life of
+        // the app rather than only once somebody opens a device.
+        MTPInterfaceClaimer.shared.start()
         usbMonitor.start { [weak self] snapshots in
             Task { await self?.applyUSBSnapshots(snapshots) }
         }
@@ -57,6 +62,7 @@ public actor DeviceCoordinator: TransportResolver {
         pollTask?.cancel()
         pollTask = nil
         usbMonitor.stop()
+        MTPInterfaceClaimer.shared.stop()
     }
 
     private func applyUSBSnapshots(_ snapshots: [USBDeviceMonitor.Snapshot]) async {
@@ -118,7 +124,15 @@ public actor DeviceCoordinator: TransportResolver {
             guard let adbURL else { throw ADBLocator.missingToolError }
             return ADBTransport(adbURL: adbURL, serial: device.serial ?? device.id.rawValue, device: device)
         case .mtp:
-            return MTPTransport(device: device)
+            guard let usb = device.usb else {
+                // Only a wired device is ever given the MTP transport, so a
+                // device that reached here without a USB descriptor came from a
+                // discovery path that has no business producing one.
+                throw TransferError.transportUnavailable(
+                    .mtp, reason: "this device is not on the USB bus.")
+            }
+            let pipe = try await MTPUSBPipe.open(matching: usb, deviceID: device.id)
+            return MTPTransport(device: device, pipe: pipe)
         case .wifi:
             guard let host = device.endpointHost else {
                 throw TransferError.transportUnavailable(.wifi, reason: "no address for this device")

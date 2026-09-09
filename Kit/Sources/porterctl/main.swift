@@ -9,6 +9,10 @@ import Foundation
 ///
 /// No command here writes to the device.
 
+// Unbuffered, because `mtp-watch` and the progress lines are only useful as
+// they happen and stdout is fully buffered whenever it is not a terminal.
+setbuf(stdout, nil)
+
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data(("porterctl: " + message + "\n").utf8))
     exit(1)
@@ -240,11 +244,80 @@ case "checksum":
     let checksum = try await transport.checksum(RemotePath(arguments[1]), algorithm: .sha256)
     print(checksum?.description ?? "device has no checksum tool")
 
+case "mtp":
+    // The one command that does not go through adb: it drives the MTP
+    // transport directly, which is the only way to exercise the path a phone
+    // without USB debugging would take.
+    let snapshots = USBDeviceMonitor.currentDevices()
+    guard !snapshots.isEmpty else { fail("no Android device on the USB bus") }
+
+    for snapshot in snapshots {
+        let usb = snapshot.descriptor
+        print("\(usb.productName ?? "Android device")  \(String(format: "%04x:%04x", usb.vendorID, usb.productID))  location \(usb.locationID)")
+
+        let report = MTPUSBLocator.inspect(matching: usb)
+        guard report.publishesInterface else {
+            print("    no file-transfer interface: the phone is set to charge only")
+            continue
+        }
+        print("    file-transfer interface present")
+        print("    exclusive owner: \(report.exclusiveOwner ?? "nobody, or this process")")
+
+        let device = Device(
+            id: DeviceID(usb.serialNumber ?? "usb-\(usb.locationID)"),
+            displayName: usb.productName ?? "Android device",
+            serial: usb.serialNumber, transport: .mtp, readiness: .ready, usb: usb)
+        do {
+            let pipe = try await MTPUSBPipe.open(matching: usb, deviceID: device.id)
+            print("    claimed, \(pipe.maximumPacketSize)-byte packets")
+            let transport = MTPTransport(device: device, pipe: pipe)
+            try await transport.connect()
+            defer { Task { await transport.disconnect() } }
+
+            let identified = try await transport.currentDevice()
+            print("    \(identified.manufacturer ?? "?") \(identified.model ?? "?")  serial \(identified.serial ?? "?")")
+            for volume in try await transport.volumes() {
+                let free = volume.freeBytes.map(ByteFormat.short) ?? "?"
+                let total = volume.totalBytes.map(ByteFormat.short) ?? "?"
+                print("    \(volume.displayName)  \(volume.rootPath)  \(free) free of \(total)")
+                for entry in try await transport.list(volume.rootPath).prefix(10) {
+                    print("        \(entry.isDirectory ? "d" : "-") \(entry.name)")
+                }
+            }
+        } catch {
+            let described = (error as? TransferError)?.errorDescription ?? error.localizedDescription
+            print("    not usable: \(described)")
+            if let recovery = (error as? TransferError)?.recoverySuggestion {
+                print("    \(recovery)")
+            }
+        }
+    }
+
+case "mtp-watch":
+    // Measures the race against ptpcamerad. Start this, then unplug and replug
+    // the phone; each attach prints who got the interface.
+    print("watching for phones. Unplug and replug the cable; ^C to stop.")
+    MTPInterfaceClaimer.shared.start { attempt in
+        let stamp = ISO8601DateFormatter().string(from: attempt.at)
+        let name = attempt.productName ?? String(format: "%04x:%04x", attempt.vendorID, attempt.productID)
+        let millis = String(format: "%.1f ms", attempt.duration * 1000)
+        if attempt.won {
+            print("\(stamp)  \(name)  claimed in \(millis)")
+        } else {
+            print("\(stamp)  \(name)  lost to \(attempt.lostTo ?? "an unnamed process") after \(millis)")
+        }
+    }
+    // The claimer runs on its own queue off an IOKit notification port, so this
+    // only has to stay alive.
+    while true { try await Task.sleep(for: .seconds(3600)) }
+
 default:
     print("""
     porterctl \u{2014} read-only diagnostics for Porter
 
       devices              List every device, with USB interface classes
+      mtp                  Drive the MTP transport directly, without adb
+      mtp-watch            Race ptpcamerad for the interface on every attach
       volumes              Storage volumes, free space, and filesystem type
       ls <path>            List a directory on the device
       biggest <path>       Find the largest files under a path
