@@ -25,8 +25,13 @@ public protocol MTPPipe: Sendable {
 /// One session is strictly serial by design, not by omission. MTP has a single
 /// transaction in flight at a time and a device given a second one while the
 /// first is open will either stall or answer the wrong question, which is why
-/// `MTPTransport` declares `maximumConcurrentStreams: 1` and why this is an
-/// actor rather than a struct with a lock.
+/// `MTPTransport` declares `maximumConcurrentStreams: 1`.
+///
+/// Being an actor is not what enforces that, though it reads as if it should.
+/// An actor gives up its isolation at every suspension, and a transaction
+/// suspends at each read and each write, so a second call can begin between two
+/// packets of the first. `transact` holds an explicit gate for the length of a
+/// whole exchange, and that is what makes the serialisation real.
 public actor MTPSession {
     public struct Options: Sendable {
         public var sessionID: UInt32
@@ -115,6 +120,30 @@ public actor MTPSession {
 
     // MARK: - Transactions
 
+    /// Held for a whole command/data/response exchange.
+    ///
+    /// `maximumConcurrentStreams: 1` binds the transfer engine, which is not
+    /// the only thing that talks to a phone: browsing is driven straight from
+    /// the UI, and clicking a second folder before the first has finished
+    /// listing puts two transactions on one pipe. The reply to one is then read
+    /// by the other, and it surfaces as a decode of an empty payload a step or
+    /// two later rather than as anything naming the real cause.
+    private var pipeIsBusy = false
+    private var pipeWaiters: [CheckedContinuation<Void, Never>] = []
+
+    private func acquirePipe() async {
+        while pipeIsBusy {
+            await withCheckedContinuation { pipeWaiters.append($0) }
+        }
+        pipeIsBusy = true
+    }
+
+    private func releasePipe() {
+        pipeIsBusy = false
+        guard !pipeWaiters.isEmpty else { return }
+        pipeWaiters.removeFirst().resume()
+    }
+
     @discardableResult
     public func transact(
         _ operation: MTPOperation,
@@ -124,6 +153,9 @@ public actor MTPSession {
         onDataIn: (@Sendable (Data) async throws -> Void)? = nil
     ) async throws -> TransactionResult {
         try Task.checkCancellation()
+
+        await acquirePipe()
+        defer { releasePipe() }
 
         let transaction = nextTransactionID
         nextTransactionID &+= 1
@@ -178,6 +210,15 @@ public actor MTPSession {
         path: RemotePath?,
         sink: (@Sendable (Data) async throws -> Void)?
     ) async throws -> Container {
+        // Cancellation is honoured for a streaming data phase, where the
+        // caller may be walking away from a large copy, and not for a metadata
+        // exchange. Once a command has gone out the device is going to answer
+        // it whether or not anyone is still listening, and MTP runs one
+        // transaction at a time, so an abandoned reply stays in the pipe for
+        // the next transaction to take as its own. The pipe's own read timeout
+        // is what bounds the wait instead.
+        let honoursCancellation = sink != nil
+
         var first = Data()
         var emptyReads = 0
         while first.isEmpty {
@@ -188,7 +229,7 @@ public actor MTPSession {
                 throw TransferError.deviceStalled(
                     reason: "the phone answered \(operation.name) with nothing but empty packets")
             }
-            try Task.checkCancellation()
+            if honoursCancellation { try Task.checkCancellation() }
             first = try await nextBytes(maximum: options.readChunkSize)
         }
 
@@ -220,7 +261,7 @@ public actor MTPSession {
 
         if let expected = header.payloadLength {
             while received < expected {
-                try Task.checkCancellation()
+                if honoursCancellation { try Task.checkCancellation() }
                 let chunk = try await nextBytes(maximum: min(options.readChunkSize, expected - received))
                 guard !chunk.isEmpty else {
                     throw TransferError.truncated(
@@ -234,7 +275,7 @@ public actor MTPSession {
             // The device declined to declare a length, which it does for large
             // objects. The transfer then ends on the first short packet.
             while true {
-                try Task.checkCancellation()
+                if honoursCancellation { try Task.checkCancellation() }
                 let chunk = try await nextBytes(maximum: options.readChunkSize)
                 if chunk.isEmpty { break }
                 received += chunk.count

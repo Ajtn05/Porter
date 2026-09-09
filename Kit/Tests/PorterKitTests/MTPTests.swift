@@ -291,6 +291,32 @@ struct MTPSessionTests {
         writer.uint16(isFolder ? MTPObjectFormat.association : MTPObjectFormat.undefined)
     }
 
+    @Test("Regression: two transactions at once do not read each other's replies")
+    func concurrentTransactionsAreSerialised() async throws {
+        // An actor gives up its isolation at every suspension, so without a
+        // gate of its own a second exchange can begin between two packets of
+        // the first. On a phone that is one command answered with another's
+        // reply; here it is one of the two calls decoding an empty payload.
+        //
+        // Browsing is where it bites: the transfer engine is held to one stream
+        // at a time, but a second folder clicked before the first has finished
+        // listing is two transactions on one pipe.
+        let (session, _) = try await openedSession([
+            MTPWire.data(.getStorageIDs, transaction: 1, payload: MTPWire.uint32Array([65537])),
+            MTPWire.response(.ok, transaction: 1),
+            MTPWire.data(.getStorageIDs, transaction: 2, payload: MTPWire.uint32Array([65538])),
+            MTPWire.response(.ok, transaction: 2)
+        ])
+
+        async let first = session.storageIDs()
+        async let second = session.storageIDs()
+        let results = try await [first, second].sorted { ($0.first ?? 0) < ($1.first ?? 0) }
+
+        // Whichever ran first, each got a whole reply and neither got an empty
+        // one.
+        #expect(results == [[65537], [65538]])
+    }
+
     @Test("Regression: a folder is not listed as a child of itself")
     func propertyListDropsTheParentRow() async throws {
         // GetObjectPropList at depth 1 answers with the folder that was asked
