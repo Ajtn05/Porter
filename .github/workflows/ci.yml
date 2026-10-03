@@ -57,23 +57,38 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Browser state checks
+        run: bash Scripts/test-browser-state.sh
+
       # Porter.xcodeproj is not committed; project.yml is the source of truth.
       - name: Generate Porter.xcodeproj
         run: xcodegen generate
 
-      # No signing identity on a runner, so signing is turned off and the
-      # DEVELOPMENT_TEAM from project.yml is cleared. This checks that App/
-      # compiles; it does not produce a shippable build.
+      # Compile without a signing identity, then ad hoc sign and verify the
+      # app and embedded extension. This is not a distribution build.
       - name: Build Porter.app
         run: |
+          mkdir -p build
+          rm -rf build/Porter.app build/DerivedData DerivedData
+          rm -f build/build-info.json
+          trap 'rm -rf build/Porter.app' ERR
           xcodebuild build \
             -project Porter.xcodeproj \
             -scheme Porter \
             -configuration Debug \
             -destination 'platform=macOS,arch=arm64' \
-            -derivedDataPath DerivedData \
-            -quiet \
+            -derivedDataPath build/DerivedData \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            DEVELOPMENT_TEAM=""
+            DEVELOPMENT_TEAM="" 2>&1 | tee build/build.log
+          ditto build/DerivedData/Build/Products/Debug/Porter.app build/Porter.app
+          codesign --force --sign - --timestamp=none --options runtime \
+            --entitlements FileProvider/Resources/PorterFileProvider.entitlements \
+            build/Porter.app/Contents/PlugIns/PorterFileProvider.appex
+          codesign --force --sign - --timestamp=none --options runtime \
+            --entitlements App/Resources/Porter.entitlements build/Porter.app
+          codesign --verify --deep --strict --verbose=2 build/Porter.app
+          plutil -lint build/Porter.app/Contents/Info.plist \
+            build/Porter.app/Contents/PlugIns/PorterFileProvider.appex/Contents/Info.plist
+          rm -rf build/DerivedData

@@ -109,9 +109,15 @@ final class PreviewThumbnailStore {
     }
 
     static func render(_ url: URL) async throws -> NSImage? {
+        try Task.checkCancellation()
         let request = QLThumbnailGenerator.Request(fileAt: url, size: CGSize(width: 512, height: 512),
                                                   scale: 1, representationTypes: .thumbnail)
         let generator = QLThumbnailGenerator.shared
+        // Older SDKs do not mark these Quick Look objects as Sendable. Keep
+        // their cancellation on the same actor that starts the request.
+        let cancelRequest: @MainActor @Sendable () -> Void = {
+            generator.cancel(request)
+        }
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 generator.generateBestRepresentation(for: request) { representation, error in
@@ -121,7 +127,7 @@ final class PreviewThumbnailStore {
                 }
             }
         } onCancel: {
-            generator.cancel(request)
+            Task { @MainActor in cancelRequest() }
         }
     }
 }
