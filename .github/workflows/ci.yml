@@ -60,6 +60,9 @@ jobs:
       - name: Browser state checks
         run: bash Scripts/test-browser-state.sh
 
+      - name: Fetch bundled ADB
+        run: bash Scripts/fetch-platform-tools.sh
+
       # Porter.xcodeproj is not committed; project.yml is the source of truth.
       - name: Generate Porter.xcodeproj
         run: xcodegen generate
@@ -68,6 +71,7 @@ jobs:
       # app and embedded extension. This is not a distribution build.
       - name: Build Porter.app
         run: |
+          set -euo pipefail
           mkdir -p build
           rm -rf build/Porter.app build/DerivedData DerivedData
           rm -f build/build-info.json
@@ -84,11 +88,15 @@ jobs:
             DEVELOPMENT_TEAM="" 2>&1 | tee build/build.log
           ditto build/DerivedData/Build/Products/Debug/Porter.app build/Porter.app
           codesign --force --sign - --timestamp=none --options runtime \
+            build/Porter.app/Contents/Resources/platform-tools/adb
+          codesign --force --sign - --timestamp=none --options runtime \
             --entitlements FileProvider/Resources/PorterFileProvider.entitlements \
             build/Porter.app/Contents/PlugIns/PorterFileProvider.appex
           codesign --force --sign - --timestamp=none --options runtime \
             --entitlements App/Resources/Porter.entitlements build/Porter.app
           codesign --verify --deep --strict --verbose=2 build/Porter.app
+          codesign --verify --strict --verbose=2 \
+            build/Porter.app/Contents/Resources/platform-tools/adb
           plutil -lint build/Porter.app/Contents/Info.plist \
             build/Porter.app/Contents/PlugIns/PorterFileProvider.appex/Contents/Info.plist
           rm -rf build/DerivedData

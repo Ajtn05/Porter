@@ -166,6 +166,7 @@ cd Kit && swift test
 ```
 
 ```bash
+bash Scripts/fetch-platform-tools.sh
 rm -rf build/Porter.app build/DerivedData
 xcodegen generate
 xcodebuild -project Porter.xcodeproj -scheme Porter -configuration Release \

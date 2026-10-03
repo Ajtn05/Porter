@@ -37,7 +37,6 @@ targets:
       - path: App/Resources/platform-tools
         type: folder
         buildPhase: resources
-        optional: true
       - path: LICENSE
         buildPhase: resources
       - path: FileProviderShared
