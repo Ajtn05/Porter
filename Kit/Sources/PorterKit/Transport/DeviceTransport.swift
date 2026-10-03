@@ -52,7 +52,7 @@ public struct BulkPullRequest: Hashable, Sendable {
 /// The one abstraction the rest of the app talks to.
 ///
 /// The user picks a device, not a protocol; everything above this line is
-/// written once and works over cable or Wi-Fi.
+/// written once and works over either USB transport.
 public protocol DeviceTransport: Sendable {
     var kind: TransportKind { get }
     var capabilities: TransportCapabilities { get }
@@ -67,6 +67,9 @@ public protocol DeviceTransport: Sendable {
     func volumes() async throws -> [StorageVolume]
     func list(_ path: RemotePath) async throws -> [RemoteFile]
     func stat(_ path: RemotePath) async throws -> RemoteFile?
+    /// Encoded preview bytes supplied by the device, without fetching the file.
+    /// Nil when the transport or file has no native thumbnail.
+    func thumbnail(_ path: RemotePath) async throws -> Data?
 
     func createDirectory(_ path: RemotePath) async throws
     func remove(_ path: RemotePath, recursive: Bool) async throws
@@ -151,6 +154,8 @@ public protocol DeviceTransport: Sendable {
 }
 
 public extension DeviceTransport {
+    func thumbnail(_ path: RemotePath) async throws -> Data? { nil }
+
     func readStream(_ path: RemotePath) async throws -> AsyncThrowingStream<Data, any Error> {
         try await readStream(path, range: .whole)
     }

@@ -6,10 +6,6 @@ options:
   createIntermediateGroups: true
   groupSortPosition: top
 
-packages:
-  PorterKit:
-    path: Kit
-
 settings:
   base:
     DEVELOPMENT_TEAM: R8P2P2R3S4
@@ -37,9 +33,11 @@ targets:
         excludes:
           - "Resources/Info.plist"
           - "Resources/*.entitlements"
+      - path: FileProviderShared
     dependencies:
-      - package: PorterKit
-        product: PorterKit
+      - target: PorterKit
+      - target: PorterFileProvider
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.porter.mac
@@ -50,6 +48,36 @@ targets:
         CODE_SIGN_STYLE: Automatic
         COMBINE_HIDPI_IMAGES: YES
         ENABLE_PREVIEWS: YES
+        SWIFT_EMIT_LOC_STRINGS: YES
+
+  PorterKit:
+    type: library.static
+    platform: macOS
+    sources:
+      - path: Kit/Sources/PorterKit
+    settings:
+      base:
+        PRODUCT_MODULE_NAME: PorterKit
+        DEFINES_MODULE: YES
+        SKIP_INSTALL: YES
+
+  PorterFileProvider:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: FileProvider
+        excludes:
+          - "Resources/Info.plist"
+          - "Resources/*.entitlements"
+      - path: FileProviderShared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.porter.mac.fileprovider
+        PRODUCT_NAME: PorterFileProvider
+        INFOPLIST_FILE: FileProvider/Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: FileProvider/Resources/PorterFileProvider.entitlements
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_APP_SANDBOX: YES
         SWIFT_EMIT_LOC_STRINGS: YES
 
 schemes:

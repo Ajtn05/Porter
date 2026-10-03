@@ -118,6 +118,7 @@ public enum MTPOperation: UInt16, Sendable, CaseIterable {
     case getObjectHandles     = 0x1007
     case getObjectInfo        = 0x1008
     case getObject            = 0x1009
+    case getThumb             = 0x100A
     case deleteObject         = 0x100B
     case sendObjectInfo       = 0x100C
     case sendObject           = 0x100D
@@ -147,6 +148,7 @@ public enum MTPOperation: UInt16, Sendable, CaseIterable {
         case .getObjectHandles: return "GetObjectHandles"
         case .getObjectInfo: return "GetObjectInfo"
         case .getObject: return "GetObject"
+        case .getThumb: return "GetThumb"
         case .deleteObject: return "DeleteObject"
         case .sendObjectInfo: return "SendObjectInfo"
         case .sendObject: return "SendObject"
@@ -191,6 +193,7 @@ public enum MTPResponseCode: UInt16, Sendable {
     case objectWriteProtected       = 0x200D
     case storeReadOnly              = 0x200E
     case accessDenied               = 0x200F
+    case noThumbnailPresent         = 0x2010
     case partialDeletion            = 0x2012
     case storeNotAvailable          = 0x2013
     case specificationByFormatUnsupported = 0x2014
@@ -253,7 +256,7 @@ public enum MTPResponse {
             return .cancelled
         case .sessionAlreadyOpen:
             return nil
-        case .invalidParameter, .generalError:
+        case .invalidParameter, .generalError, .noThumbnailPresent:
             return .protocolError("\(operation.name) was refused with \(describe(code))")
         }
     }

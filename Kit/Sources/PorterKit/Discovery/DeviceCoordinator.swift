@@ -1,18 +1,5 @@
 import Foundation
 
-/// The address and credentials needed to reopen a paired Wi-Fi device.
-public struct WiFiConnection: Sendable {
-    public var host: String
-    public var port: Int
-    public var credentials: WiFiCredentials
-
-    public init(host: String, port: Int = 53317, credentials: WiFiCredentials) {
-        self.host = host
-        self.port = port
-        self.credentials = credentials
-    }
-}
-
 /// Owns device discovery and vends transports.
 ///
 /// Callers ask for a device by ID and get a readable, writable transport. This
@@ -20,7 +7,6 @@ public struct WiFiConnection: Sendable {
 public actor DeviceCoordinator: TransportResolver {
     private let usbMonitor = USBDeviceMonitor()
     private var usbSnapshots: [USBDeviceMonitor.Snapshot] = []
-    private var wirelessDevices: [DeviceMerge.WirelessDevice] = []
     private var transports: [DeviceID: any DeviceTransport] = [:]
     private var devices: [Device] = []
     private var pollTask: Task<Void, Never>?
@@ -33,18 +19,9 @@ public actor DeviceCoordinator: TransportResolver {
     /// How the USB bus is read. Injected so the refresh path can be exercised
     /// without a phone on the other end of a cable.
     private let readUSB: @Sendable () -> [USBDeviceMonitor.Snapshot]
-    /// Supplied by the app because pairing secrets belong in its Keychain, not
-    /// in the discovery model or a transfer queue on disk.
-    private let wifiConnection: @Sendable (Device) async -> WiFiConnection?
-
     public init(adbURL: URL? = nil,
-                readUSB: (@Sendable () -> [USBDeviceMonitor.Snapshot])? = nil,
-                wifiConnection: (@Sendable (Device) async -> WiFiConnection?)? = nil) {
+                readUSB: (@Sendable () -> [USBDeviceMonitor.Snapshot])? = nil) {
         self.readUSB = readUSB ?? { USBDeviceMonitor.currentDevices() }
-        self.wifiConnection = wifiConnection ?? { device in
-            guard let host = device.endpointHost else { return nil }
-            return WiFiConnection(host: host, credentials: .unpaired)
-        }
         self.adbURL = adbURL ?? ADBLocator.locate()
         if self.adbURL == nil {
             adbUnavailableReason = "adb was not found, so devices without USB debugging will use the slower file-transfer mode."
@@ -97,11 +74,6 @@ public actor DeviceCoordinator: TransportResolver {
         await refresh()
     }
 
-    public func setWirelessDevices(_ devices: [DeviceMerge.WirelessDevice]) async {
-        wirelessDevices = devices
-        await refresh()
-    }
-
     public func refresh() async {
         // Re-read the bus rather than trusting the last notification. The USB
         // monitor only publishes on a change it was told about, and a phone
@@ -118,13 +90,19 @@ public actor DeviceCoordinator: TransportResolver {
         if let adbURL {
             adbListings = (try? await ADBTransport.listDevices(adbURL: adbURL)) ?? []
         }
-        let merged = DeviceMerge.merge(usb: usbSnapshots, adb: adbListings, wireless: wirelessDevices)
+        let merged = DeviceMerge.merge(usb: usbSnapshots, adb: adbListings)
 
         // Drop cached transports for devices that went away, so a reconnect
         // builds a fresh one instead of reusing a dead handle.
         let liveIDs = Set(merged.map(\.id))
         for id in transports.keys where !liveIDs.contains(id) {
             transports[id] = nil
+        }
+        for device in merged {
+            if let previous = devices.first(where: { $0.id == device.id }),
+               previous.transport != device.transport {
+                transports[device.id] = nil
+            }
         }
 
         guard merged != devices else { return }
@@ -141,17 +119,19 @@ public actor DeviceCoordinator: TransportResolver {
     // MARK: - TransportResolver
 
     public func transport(for deviceID: DeviceID) async throws -> any DeviceTransport {
-        if let existing = transports[deviceID] { return existing }
-
         guard let device = devices.first(where: { $0.id == deviceID }) else {
             throw TransferError.deviceNotFound(deviceID)
         }
+        if let existing = transports[deviceID] { return existing }
         guard device.readiness.isBrowsable else {
             throw TransferError.deviceNotReady(deviceID, device.readiness)
         }
 
         let transport = try await makeTransport(for: device)
         try await transport.connect()
+        guard devices.contains(where: { $0.id == deviceID && $0.transport == device.transport }) else {
+            throw TransferError.deviceNotFound(deviceID)
+        }
         transports[deviceID] = transport
         return transport
     }
@@ -171,12 +151,6 @@ public actor DeviceCoordinator: TransportResolver {
             }
             let pipe = try await MTPUSBPipe.open(matching: usb, deviceID: device.id)
             return MTPTransport(device: device, pipe: pipe)
-        case .wifi:
-            guard let connection = await wifiConnection(device) else {
-                throw TransferError.transportUnavailable(.wifi, reason: "no address for this device")
-            }
-            return WiFiTransport(device: device, host: connection.host, port: connection.port,
-                                 credentials: connection.credentials)
         }
     }
 

@@ -67,6 +67,7 @@ public actor MTPSession {
     private var nextTransactionID: UInt32 = 1
     private var isOpen = false
     private var cachedDeviceInfo: MTPDeviceInfo?
+    private var thumbnailsUnsupported = false
 
     /// Bytes that arrived past the end of the container being read.
     ///
@@ -95,6 +96,7 @@ public actor MTPSession {
         nextTransactionID = 0
         let info = try await transact(.getDeviceInfo)
         cachedDeviceInfo = try MTPDeviceInfo.decode(info.data)
+        thumbnailsUnsupported = false
 
         // A session left open by a previous process answers
         // `SessionAlreadyOpen`, which the response mapping already treats as
@@ -153,10 +155,22 @@ public actor MTPSession {
         onDataIn: (@Sendable (Data) async throws -> Void)? = nil
     ) async throws -> TransactionResult {
         try Task.checkCancellation()
-
         await acquirePipe()
         defer { releasePipe() }
+        try Task.checkCancellation()
 
+        return try await transactHoldingPipe(operation, parameters: parameters,
+                                             path: path, dataOut: dataOut, onDataIn: onDataIn)
+    }
+
+    /// Used by compound operations that must keep the pipe between exchanges.
+    private func transactHoldingPipe(
+        _ operation: MTPOperation,
+        parameters: [UInt32] = [],
+        path: RemotePath? = nil,
+        dataOut: Data? = nil,
+        onDataIn: (@Sendable (Data) async throws -> Void)? = nil
+    ) async throws -> TransactionResult {
         let transaction = nextTransactionID
         nextTransactionID &+= 1
 
@@ -169,10 +183,27 @@ public actor MTPSession {
         }
 
         var collected = Data()
+        var staleContainers = 0
         while true {
-            let container = try await readContainer(operation: operation, path: path, sink: onDataIn)
+            let container = try await readContainer(operation: operation, transaction: transaction,
+                                                    path: path, sink: onDataIn)
+            if container.header.type != .event && container.header.transactionID != transaction {
+                // A reply that arrived after a previous request timed out is
+                // not the answer to this command. Discard both its data and
+                // response phases before reading this transaction's reply.
+                staleContainers += 1
+                guard staleContainers <= 4 else {
+                    throw TransferError.protocolError(
+                        "\(operation.name) received too many replies to an older request")
+                }
+                continue
+            }
             switch container.header.type {
             case .data:
+                guard container.header.code == operation.rawValue else {
+                    throw TransferError.protocolError(
+                        "\(operation.name) received data for a different operation")
+                }
                 collected = container.payload
             case .response:
                 let raw = container.header.code
@@ -207,6 +238,7 @@ public actor MTPSession {
 
     private func readContainer(
         operation: MTPOperation,
+        transaction: UInt32,
         path: RemotePath?,
         sink: (@Sendable (Data) async throws -> Void)?
     ) async throws -> Container {
@@ -250,12 +282,14 @@ public actor MTPSession {
 
         // Only a data phase streams. A response's payload is five parameters at
         // most, so it is always accumulated.
-        let streaming = header.type == .data && sink != nil
+        let discardData = header.type == .data
+            && (header.transactionID != transaction || header.code != operation.rawValue)
+        let streaming = header.type == .data && !discardData && sink != nil
         var accumulated = Data()
         var received = payload.count
         if streaming {
             if !payload.isEmpty { try await sink!(payload) }
-        } else {
+        } else if !discardData {
             accumulated = payload
         }
 
@@ -269,7 +303,8 @@ public actor MTPSession {
                         expected: Int64(expected), actual: Int64(received))
                 }
                 received += chunk.count
-                if streaming { try await sink!(chunk) } else { accumulated.append(chunk) }
+                if streaming { try await sink!(chunk) }
+                else if !discardData { accumulated.append(chunk) }
             }
         } else {
             // The device declined to declare a length, which it does for large
@@ -279,7 +314,8 @@ public actor MTPSession {
                 let chunk = try await nextBytes(maximum: options.readChunkSize)
                 if chunk.isEmpty { break }
                 received += chunk.count
-                if streaming { try await sink!(chunk) } else { accumulated.append(chunk) }
+                if streaming { try await sink!(chunk) }
+                else if !discardData { accumulated.append(chunk) }
                 if chunk.count % pipe.maximumPacketSize != 0 { break }
             }
         }
@@ -316,8 +352,15 @@ public actor MTPSession {
     }
 
     public func storageInfo(_ id: UInt32) async throws -> MTPStorageInfo {
-        let result = try await transact(.getStorageInfo, parameters: [id])
-        return try MTPStorageInfo.decode(result.data)
+        for attempt in 0..<2 {
+            let result = try await transact(.getStorageInfo, parameters: [id])
+            if !result.data.isEmpty {
+                return try MTPStorageInfo.decode(result.data)
+            }
+            if attempt == 0 { try await Task.sleep(for: .milliseconds(250)) }
+        }
+        throw TransferError.deviceStalled(
+            reason: "the phone returned no storage details for its file-transfer volume")
     }
 
     // MARK: - Objects
@@ -333,6 +376,29 @@ public actor MTPSession {
     public func objectInfo(_ handle: UInt32, path: RemotePath? = nil) async throws -> MTPObjectInfo {
         let result = try await transact(.getObjectInfo, parameters: [handle], path: path)
         return try MTPObjectInfo.decode(result.data)
+    }
+
+    /// The phone supplies a small encoded image instead of the original file.
+    public func thumbnail(_ handle: UInt32, path: RemotePath? = nil) async throws -> Data? {
+        guard !thumbnailsUnsupported, supports(.getThumb) else { return nil }
+        let collector = MTPThumbnailBytes()
+        do {
+            _ = try await transact(.getThumb, parameters: [handle], path: path,
+                                   onDataIn: { await collector.append($0) })
+            return await collector.result()
+        } catch let error as TransferError {
+            switch error {
+            case .unsupported:
+                thumbnailsUnsupported = true
+                return nil
+            case .protocolError(let reason):
+                // Only a consumed error response can fall back safely. Broken
+                // framing must propagate instead of starting another request.
+                guard reason.hasPrefix("GetThumb was refused with") else { throw error }
+                return nil
+            default: throw error
+            }
+        }
     }
 
     /// The 64-bit size property, needed for anything four gigabytes or larger.
@@ -403,7 +469,12 @@ public actor MTPSession {
         path: RemotePath? = nil,
         progress: @escaping @Sendable (Int64) -> Void
     ) async throws -> UInt32 {
-        let announced = try await transact(
+        try Task.checkCancellation()
+        await acquirePipe()
+        defer { releasePipe() }
+        try Task.checkCancellation()
+
+        let announced = try await transactHoldingPipe(
             .sendObjectInfo,
             parameters: [info.storageID, info.parentHandle],
             path: path,
@@ -440,14 +511,25 @@ public actor MTPSession {
             throw TransferError.truncated(path: url.lastPathComponent, expected: size, actual: sent)
         }
 
-        try await awaitResponse(for: .sendObject, path: path)
+        try await awaitResponse(for: .sendObject, transaction: transaction, path: path)
         return handle
     }
 
     /// Drains containers until the response to `operation` arrives.
-    private func awaitResponse(for operation: MTPOperation, path: RemotePath?) async throws {
+    private func awaitResponse(for operation: MTPOperation, transaction: UInt32,
+                               path: RemotePath?) async throws {
+        var staleContainers = 0
         while true {
-            let container = try await readContainer(operation: operation, path: path, sink: nil)
+            let container = try await readContainer(operation: operation, transaction: transaction,
+                                                    path: path, sink: nil)
+            if container.header.type != .event && container.header.transactionID != transaction {
+                staleContainers += 1
+                guard staleContainers <= 4 else {
+                    throw TransferError.protocolError(
+                        "\(operation.name) received too many replies to an older request")
+                }
+                continue
+            }
             switch container.header.type {
             case .response:
                 let raw = container.header.code
@@ -527,26 +609,21 @@ public actor MTPSession {
 }
 
 public extension MTPSession {
-    /// Every child of `parent`, with sizes and dates, in one transaction.
-    ///
-    /// Returns nil when the device cannot answer this way, which is a normal
-    /// outcome rather than an error: the caller then walks the handles one at a
-    /// time. It is only ever attempted on a real folder handle, never on the
-    /// store root, because `GetObjectPropList` reads the root sentinel as
-    /// "every object on the device" rather than "the top level", and on a full
-    /// phone that is a hundred thousand objects in one reply.
+    /// Every immediate child in one transaction when property lists are available.
+    /// Android's property-list root is handle 0 at depth 0. The GetObjectHandles
+    /// root sentinel (0xFFFFFFFF) instead requests every object on the phone.
     func children(ofParent parent: UInt32, storage: UInt32,
                   path: RemotePath? = nil) async throws -> [MTPObject]? {
-        guard parent != MTPHandle.root, parent != MTPHandle.any else { return nil }
-        guard supports(.getObjectPropList) else { return nil }
-
+        guard parent != MTPHandle.any, supports(.getObjectPropList) else { return nil }
+        let isRoot = parent == MTPHandle.root
+        let queryHandle = isRoot ? UInt32(0) : parent
         let allProperties: UInt32 = 0xFFFF_FFFF
-        let immediateChildren: UInt32 = 1
+        let depth: UInt32 = isRoot ? 0 : 1
         let result: TransactionResult
         do {
             result = try await transact(
                 .getObjectPropList,
-                parameters: [parent, 0, allProperties, 0, immediateChildren],
+                parameters: [queryHandle, 0, allProperties, 0, depth],
                 path: path
             )
         } catch let error as TransferError {
@@ -559,7 +636,7 @@ public extension MTPSession {
             }
         }
 
-        guard let table = try? MTPObjectPropList.decode(result.data), !table.isEmpty else {
+        guard let table = try? MTPObjectPropList.decode(result.data) else {
             return nil
         }
 
@@ -573,6 +650,13 @@ public extension MTPSession {
             // itself: entering it re-lists the same folder, and every click
             // adds another copy to the breadcrumb without ever going anywhere.
             guard handle != parent else { continue }
+            if isRoot {
+                // Root queries span stores, so both fields are needed to filter
+                // safely. An incomplete responder falls back to ObjectInfo.
+                guard let rowStorage = properties[MTPObjectProperty.storageID]?.int64,
+                      let rowParent = properties[MTPObjectProperty.parentObject]?.int64 else { return nil }
+                guard rowStorage == Int64(storage), rowParent == 0 || rowParent == Int64(MTPHandle.root) else { continue }
+            }
 
             let name = properties[MTPObjectProperty.objectFileName]?.string
                 ?? properties[MTPObjectProperty.name]?.string
@@ -601,4 +685,21 @@ public extension MTPSession {
         // between runs and keeps tests honest.
         return objects.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
+}
+
+/// The data phase is drained even for a malformed oversized thumbnail, so the
+/// following response stays aligned and allocation is limited to one megabyte.
+private actor MTPThumbnailBytes {
+    private var bytes = Data()
+    private var oversized = false
+    func append(_ chunk: Data) {
+        guard !oversized else { return }
+        guard bytes.count + chunk.count <= 1024 * 1024 else {
+            oversized = true
+            bytes.removeAll()
+            return
+        }
+        bytes.append(chunk)
+    }
+    func result() -> Data? { oversized || bytes.isEmpty ? nil : bytes }
 }

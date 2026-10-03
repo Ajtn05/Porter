@@ -23,8 +23,9 @@ public enum ADBParsing {
             }
         }
 
-        public var isWireless: Bool {
-            // adb over Wi-Fi uses "host:port" as the serial.
+        public var isNetworkAddress: Bool {
+            // ADB network endpoints use "host:port" as the serial. Porter
+            // only lists devices attached through USB.
             serial.contains(":") && serial.split(separator: ":").count == 2
         }
 

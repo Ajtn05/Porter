@@ -4,7 +4,7 @@ import SwiftUI
 @main
 struct PorterApp: App {
     @State private var model = AppModel()
-    @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("showMenuBarExtra") private var showMenuBarExtra = true
 
     var body: some Scene {
         Window("Porter", id: "main") {
@@ -30,7 +30,7 @@ struct PorterApp: App {
         .commands { PorterCommands(model: model) }
 
         // Reports transfer progress while the main window is closed.
-        MenuBarExtra {
+        MenuBarExtra(isInserted: $showMenuBarExtra) {
             MenuBarContent()
                 .environment(model)
         } label: {
@@ -55,17 +55,14 @@ struct PorterCommands: Commands {
                 .keyboardShortcut("n", modifiers: [.command, .shift])
         }
         CommandGroup(after: .toolbar) {
-            Picker("View", selection: Binding(get: { model.viewMode }, set: { model.viewMode = $0 })) {
-                Text("as List").tag(ViewMode.list)
-                Text("as Icons").tag(ViewMode.grid)
+            Menu("This Mac") {
+                PaneViewMenu(preferences: Binding(get: { model.macView }, set: { model.macView = $0 }))
+                Toggle("Show Preview", isOn: Binding(get: { model.showMacPreview }, set: { model.showMacPreview = $0 }))
             }
-            .pickerStyle(.inline)
-
-            Toggle("Show Hidden Files", isOn: Binding(
-                get: { model.showHiddenFiles },
-                set: { model.showHiddenFiles = $0 }
-            ))
-            .keyboardShortcut(".", modifiers: [.command, .shift])
+            Menu("Android") {
+                PaneViewMenu(preferences: Binding(get: { model.androidView }, set: { model.androidView = $0 }))
+                Toggle("Show Preview", isOn: Binding(get: { model.showAndroidPreview }, set: { model.showAndroidPreview = $0 }))
+            }
 
             Divider()
             Button("Refresh") { Task { await model.refreshBothPanes() } }

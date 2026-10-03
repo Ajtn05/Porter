@@ -19,7 +19,9 @@
     <true/>
     <key>com.apple.security.network.client</key>
     <true/>
-    <key>com.apple.security.network.server</key>
-    <true/>
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>group.app.porter.fileprovider</string>
+    </array>
 </dict>
 </plist>

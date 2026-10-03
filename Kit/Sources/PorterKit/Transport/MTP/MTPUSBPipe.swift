@@ -97,6 +97,8 @@ public final class MTPUSBPipe: MTPPipe, @unchecked Sendable {
                     continuation.resume(returning: MTPUSBPipe(
                         interface: interface, deviceID: deviceID, options: options,
                         release: { $0.close() }))
+                } catch let busy as MTPUSBInterface.ClaimBusy {
+                    continuation.resume(throwing: MTPUSBLocator.exclusiveAccessError(owner: busy.ownerName))
                 } catch {
                     continuation.resume(throwing: error)
                 }
@@ -184,6 +186,11 @@ public final class MTPUSBPipe: MTPPipe, @unchecked Sendable {
 /// Every method here blocks. It runs on `MTPUSBPipe`'s queue once a pipe owns
 /// it, and on the claimer's notification queue before that.
 final class MTPUSBInterface {
+    struct ClaimBusy: Error {
+        let ownerName: String?
+        let ownerPID: Int?
+    }
+
     let endpoints: MTPUSBEndpoints
 
     private var interface: UnsafeMutablePointer<UnsafeMutablePointer<IOUSBInterfaceInterface>?>?
@@ -253,7 +260,8 @@ final class MTPUSBInterface {
             _ = interface.pointee!.pointee.Release(interface)
             IODestroyPlugInInterface(plugin)
             if opened == kIOReturnExclusiveAccess {
-                throw MTPUSBLocator.exclusiveAccessError(owner: MTPUSBLocator.exclusiveOwner(of: service))
+                let owner = MTPUSBLocator.exclusiveOwnerProcess(of: service)
+                throw ClaimBusy(ownerName: owner?.name, ownerPID: owner?.pid)
             }
             throw TransferError.transportUnavailable(
                 .mtp,
@@ -468,10 +476,14 @@ public enum MTPUSBLocator {
     /// client behind, so on a typical Mac the list of clients names two or
     /// three innocents alongside the one that matters.
     static func exclusiveOwner(of service: io_service_t) -> String? {
+        exclusiveOwnerProcess(of: service)?.name
+    }
+
+    static func exclusiveOwnerProcess(of service: io_service_t) -> (pid: Int, name: String)? {
         guard let raw = properties(of: service)["UsbExclusiveOwner"] as? String,
               let owner = process(from: raw) else { return nil }
         guard owner.pid != Int(ProcessInfo.processInfo.processIdentifier) else { return nil }
-        return owner.name
+        return owner
     }
 
     /// Splits IOKit's `pid 431, Finder` shape into its two halves.

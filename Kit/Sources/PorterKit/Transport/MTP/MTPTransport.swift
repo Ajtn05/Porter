@@ -19,6 +19,7 @@ public protocol MTPBackend: Sendable {
 
     func objectHandles(storage: UInt32, parent: UInt32) async throws -> [UInt32]
     func objectInfo(_ handle: UInt32, path: RemotePath?) async throws -> MTPObjectInfo
+    func thumbnail(_ handle: UInt32, path: RemotePath?) async throws -> Data?
     func objectSize(_ handle: UInt32, path: RemotePath?) async throws -> Int64?
     /// One transaction for a whole folder, or nil when the device cannot answer
     /// that way and the caller should walk the handles one at a time.
@@ -37,6 +38,10 @@ public protocol MTPBackend: Sendable {
                     path: RemotePath?) async throws
     func renameObject(_ handle: UInt32, to name: String, path: RemotePath?) async throws
     func setModified(_ date: Date, handle: UInt32, path: RemotePath?) async throws
+}
+
+public extension MTPBackend {
+    func thumbnail(_ handle: UInt32, path: RemotePath?) async throws -> Data? { nil }
 }
 
 extension MTPSession: MTPBackend {}
@@ -151,7 +156,7 @@ public actor MTPTransport: DeviceTransport {
     static var unavailable: TransferError {
         .transportUnavailable(
             .mtp,
-            reason: "this build has no MTP engine attached. Turn on USB debugging to use the faster ADB transport, or pair over Wi-Fi."
+            reason: "this build has no MTP engine attached. Turn on USB debugging to use the ADB transport."
         )
     }
 
@@ -381,6 +386,12 @@ public actor MTPTransport: DeviceTransport {
         }
     }
 
+    public func thumbnail(_ path: RemotePath) async throws -> Data? {
+        let backend = try requireBackend()
+        guard case .object(let object, _) = try await resolve(path), !object.isFolder else { return nil }
+        return try await backend.thumbnail(object.handle, path: path)
+    }
+
     public func stat(_ path: RemotePath) async throws -> RemoteFile? {
         do {
             switch try await resolve(path) {
@@ -405,7 +416,9 @@ public actor MTPTransport: DeviceTransport {
         let destination = try await container(of: parent)
         _ = try await backend.createFolder(named: path.name, parent: destination.handle,
                                            storage: destination.storage, path: path)
-        invalidate(parent)
+        // The parent handle and its other children remain valid. Dropping the
+        // whole parent would force another MTP walk for every later file in it.
+        invalidate(path)
     }
 
     public func remove(_ path: RemotePath, recursive: Bool) async throws {
@@ -459,8 +472,7 @@ public actor MTPTransport: DeviceTransport {
             }
         }
         invalidate(canonicalSource)
-        invalidate(sourceParent)
-        invalidate(destinationParent)
+        invalidate(destination)
     }
 
     // MARK: - Bytes
@@ -543,7 +555,9 @@ public actor MTPTransport: DeviceTransport {
                 volume: fresh?.description ?? cached?.description ?? parentPath.string
             )
         }
-        invalidate(parentPath)
+        // Sending a file changes this entry, not its folder handle. Keeping
+        // the folder cached avoids a USB metadata round trip per file in a batch.
+        invalidate(path)
     }
 
     public func checksum(_ path: RemotePath, algorithm: ChecksumAlgorithm) async throws -> Checksum? {

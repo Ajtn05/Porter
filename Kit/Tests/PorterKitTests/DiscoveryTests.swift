@@ -86,28 +86,15 @@ struct DeviceMergeTests {
         #expect(try #require(error.recoverySuggestion).contains("Allow"))
     }
 
-    @Test("A cable beats Wi-Fi for the same phone, and both never show twice")
-    func cablePreferredOverWiFi() throws {
+    @Test("MTP remains usable when USB debugging is not authorized")
+    func mtpBeatsUnauthorizedADB() throws {
         let devices = DeviceMerge.merge(
-            usb: [usbSnapshot(serial: "DUP", interfaces: [adbInterface])],
-            adb: [ADBParsing.DeviceListing(serial: "DUP", state: "device", properties: ["model": "Pixel_7"])],
-            wireless: [DeviceMerge.WirelessDevice(id: "wifi-DUP", name: "Pixel 7",
-                                                  host: "192.168.1.44", serial: "DUP")]
+            usb: [usbSnapshot(serial: "NEW1", interfaces: [mtpInterface, adbInterface])],
+            adb: [ADBParsing.DeviceListing(serial: "NEW1", state: "unauthorized", properties: [:])]
         )
         #expect(devices.count == 1)
-        #expect(devices[0].transport == .adb)
-    }
-
-    @Test("A Wi-Fi-only phone still appears")
-    func wirelessOnly() throws {
-        let devices = DeviceMerge.merge(
-            usb: [], adb: [],
-            wireless: [DeviceMerge.WirelessDevice(id: "wifi-1", name: "Pixel 7",
-                                                  host: "192.168.1.44", serial: "REMOTE")]
-        )
-        let device = try #require(devices.first)
-        #expect(device.transport == .wifi)
-        #expect(device.endpointHost == "192.168.1.44")
+        #expect(devices[0].transport == .mtp)
+        #expect(devices[0].readiness == .ready)
     }
 
     @Test("Ready devices sort above ones that need attention")
@@ -160,10 +147,9 @@ struct TransportCapabilityTests {
         #expect(transport.capabilities.supportsMtimePreservation)
     }
 
-    @Test("Transports rank cable above Wi-Fi above MTP")
+    @Test("ADB ranks ahead of MTP")
     func preferenceOrder() {
-        #expect(TransportKind.adb < TransportKind.wifi)
-        #expect(TransportKind.wifi < TransportKind.mtp)
+        #expect(TransportKind.adb < TransportKind.mtp)
     }
 }
 

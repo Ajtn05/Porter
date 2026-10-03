@@ -60,15 +60,6 @@ ExportOptions.plist
 !.env.example
 notarization-*.json
 
-# ---- Android companion app (Phase 2) ----
-Android/.gradle/
-Android/build/
-Android/app/build/
-Android/local.properties
-Android/captures/
-*.apk
-*.aab
-
 # ---- This app's own runtime files ----
 # In-flight transfer sidecars. They only appear inside a copy destination, but
 # if someone ever points one at a checkout, a half-copied 4 GB video should not

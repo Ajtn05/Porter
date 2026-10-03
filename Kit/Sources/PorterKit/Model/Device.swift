@@ -11,15 +11,12 @@ public struct DeviceID: Hashable, Sendable, Codable, CustomStringConvertible, Ex
 public enum TransportKind: String, Sendable, Codable, CaseIterable, Comparable {
     case adb
     case mtp
-    case wifi
 
-    /// Preference order when one physical device is reachable more than one
-    /// way. ADB is fastest and the only transport with reliable size reporting.
+    /// Prefer ADB when both USB modes are available.
     public var preferenceRank: Int {
         switch self {
         case .adb: return 0
-        case .wifi: return 1
-        case .mtp: return 2
+        case .mtp: return 1
         }
     }
 
@@ -31,7 +28,6 @@ public enum TransportKind: String, Sendable, Codable, CaseIterable, Comparable {
         switch self {
         case .adb: return "USB (debugging)"
         case .mtp: return "USB (file transfer)"
-        case .wifi: return "Wi-Fi"
         }
     }
 }
@@ -120,14 +116,12 @@ public struct Device: Identifiable, Hashable, Sendable, Codable {
     public var transport: TransportKind
     public var readiness: DeviceReadiness
     public var usb: USBDescriptor?
-    /// For Wi-Fi devices, the resolved host the device was reached on.
-    public var endpointHost: String?
     public var lastSeen: Date
 
     public init(id: DeviceID, displayName: String, manufacturer: String? = nil, model: String? = nil,
                 androidRelease: String? = nil, serial: String? = nil, transport: TransportKind,
                 readiness: DeviceReadiness = .ready, usb: USBDescriptor? = nil,
-                endpointHost: String? = nil, lastSeen: Date = Date()) {
+                lastSeen: Date = Date()) {
         self.id = id
         self.displayName = displayName
         self.manufacturer = manufacturer
@@ -137,7 +131,6 @@ public struct Device: Identifiable, Hashable, Sendable, Codable {
         self.transport = transport
         self.readiness = readiness
         self.usb = usb
-        self.endpointHost = endpointHost
         self.lastSeen = lastSeen
     }
 }

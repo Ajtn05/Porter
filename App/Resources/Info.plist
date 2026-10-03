@@ -23,14 +23,6 @@
     <key>NSHumanReadableCopyright</key>
     <string>Free software. No account, no cloud, no subscription.</string>
 
-    <!-- Bonjour discovery of the Android companion app, LAN only. -->
-    <key>NSLocalNetworkUsageDescription</key>
-    <string>Porter finds your phone on this Wi-Fi network so it can copy files directly, without going through the internet.</string>
-    <key>NSBonjourServices</key>
-    <array>
-        <string>_porter._tcp</string>
-    </array>
-
     <!-- The drag type used when dragging files out of the device pane. -->
     <key>UTExportedTypeDeclarations</key>
     <array>

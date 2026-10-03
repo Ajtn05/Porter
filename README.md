@@ -4,19 +4,17 @@
 # Porter
 
 A free, native macOS app for moving files to and from an Android phone over a
-USB cable or the local network. It supports USB debugging (ADB), the standard
-Android file-transfer mode (MTP), and a paired Wi-Fi companion app, so USB
-debugging is optional.
+USB cable. It supports USB debugging (ADB) and standard Android File Transfer
+mode (MTP), so USB debugging is optional.
 
-Google discontinued Android File Transfer in May 2024 and most alternatives are either paid, bloated, or look outdated. This aims to replace all that. The phone behaves like a drive, with resumable and checksum-verified ADB or paired Wi-Fi transfers plus a standard MTP fallback when USB debugging is off.
+Google discontinued Android File Transfer in May 2024. Porter aims to replace
+it with resumable, checksum-verified ADB transfers and direct MTP support.
 </div>
 
 ## Status
 
 Early functionality has been tested with a Galaxy S22 on Android 16. It can
 browse and copy over USB debugging (ADB) or normal File Transfer mode (MTP).
-The new paired Wi-Fi path builds on both platforms and is ready for on-device
-integration testing.
 
 
 **Works:** USB discovery identifies file-transfer mode separately from
@@ -38,23 +36,39 @@ checksum verification. A 3 GB / 716-file batch completed with 716 verified
 and no failures. The small-file batching implementation is covered by fake
 device tests; its real-device throughput still needs measuring.
 
-## Paired Wi-Fi
+## Browser views and previews
 
-The repository now includes `Android/`, a companion app that serves the same
-v1 Wi-Fi protocol used by `WiFiTransport`. Start sharing in the companion,
-then choose **Pair Wi-Fi Phone** in Porter and enter the phone's local address
-and six-digit code, plus its displayed certificate fingerprint. Pairing happens
-over TLS; the Mac compares that out-of-band fingerprint to the certificate it
-sees and to the pairing reply, then keeps the bearer token in Keychain and pins
-that certificate for every later request.
-There is no account, cloud relay, or Internet service.
+The Mac and Android panes have separate saved view modes, sort orders,
+hidden-file rules, and icon-preview toggles. Use the controls in each pane's
+header to switch between list and icon view independently.
 
-The companion supports volume and directory operations, ranged downloads,
-resumable uploads, SHA-256/MD5 checksums, modification dates, and free-space
-reports. It advertises `_porter._tcp` on the LAN for future discovery; the Mac
-pairing screen currently asks for the address manually. The server restricts
-requests to Android shared-storage roots and will not modify a volume root.
+Each pane has an optional preview sidebar showing the selected file's thumbnail
+and metadata, with Quick Look and a summary for multiple selections. Its width
+can be resized, and each pane's sidebar button hides or shows its own preview.
+Settings saves the Mac and Android sidebar toggles independently. The Mac
+sidebar previews local files directly and shares the Mac icon thumbnail cache.
+Icon view also shows thumbnails for supported images, movies, PDFs, text, and documents
+when macOS can generate them. Unsupported files keep their file-type icons.
 
+MTP icon previews prefer native thumbnails supplied by the phone, including
+for large originals, instead of downloading full files. Missing thumbnails keep
+the file-type icon. Settings can enable slower full-file icon fallbacks, capped
+at 16 MB per file and 64 MB per folder visit. Selection previews can use a
+bounded full-file fallback; Quick Look explicitly loads larger files.
+
+Fetches run one at a time and pause during directory loading and transfers.
+A bounded memory cache shares images between the sidebar and icons and reuses
+them across folder visits. File bytes used for fallbacks are deleted after
+rendering. Refresh and device changes clear the remote image cache. Settings
+also contains the preview/sidebar options, each pane's preferences, and the
+menu bar button toggle; choices persist across launches.
+
+The storage root also uses one property-list request where supported, with
+handle 0 and depth 0, then filters the result by storage and parent. This avoids
+per-item metadata round trips without recursively enumerating the phone.
+Unsupported or incomplete replies use the ordinary handle/object-info path.
+The wire shapes follow [Android's MTP database implementation](https://android.googlesource.com/platform/frameworks/base/+/master/media/java/android/mtp/MtpDatabase.java)
+and [native thumbnail API](https://developer.android.com/reference/android/mtp/MtpDevice#getThumbnail(int)).
 
 ## MTP, without USB debugging
 
@@ -72,8 +86,11 @@ more important than avoiding the developer option.
 
 macOS normally gives the MTP interface to `ptpcamerad`, and that exclusive
 claim cannot be taken back. Porter starts an interface claimer with the app and
-races it when the phone is attached. Start Porter before connecting the phone;
-if another process wins, unplug and reconnect it. `porterctl mtp` identifies
+races it when the phone is attached. Start Porter before connecting the phone.
+If another app wins, Porter prompts you to ask it to quit, then reconnect the
+phone so Porter can claim MTP. If macOS's `ptpcamerad` wins, Porter explains
+that the system service cannot be closed and prompts you to reconnect instead.
+`porterctl mtp` identifies
 the process holding the interface, and `porterctl mtp-watch` reports the result
 of each attach. Porter only claims known Android phones, never cameras. While
 it holds a phone's MTP interface, Photos and Image Capture cannot use that
@@ -81,12 +98,12 @@ phone until it is unplugged.
 
 ## Next
 
-1. **Validate paired Wi-Fi on hardware.** Install the companion on real phones,
-   exercise pairing, resume, certificate rejection, storage permissions, and
-   long-running transfers. Add Mac-side mDNS discovery after that path is
-   proven.
-2. **File Provider extension.** This would put the phone in the Finder sidebar.
-   The sandboxed extension must proxy ADB work to the main app over XPC.
+1. **Validate Finder access.** A read-only File Provider extension can register
+   a phone in Finder and asks the host app to materialize whole files through
+   an App-Group bridge. Signed, on-device Finder browsing and downloads still
+   need integration testing before this is a supported path.
+2. **Measure MTP on real devices.** Check large files, mixed folders, and
+   device compatibility before changing USB buffer sizes or transaction shape.
 3. **Phase 3:** photo import, watched folders, and APK sideloading.
 
 Signing, notarisation, and bundling `adb` are release work needed before the
@@ -99,14 +116,15 @@ needs testing; it falls as the phone throttles under load.
 Kit/                    Swift package - all the logic, no UI
   Sources/PorterKit/
     Model/              Paths, devices, volumes, errors
-    Transport/          DeviceTransport and its three implementations
+    Transport/          DeviceTransport, ADB, and MTP
     Engine/             Queue, planner, and the copy engine
     Discovery/          USB bus watching and device merging
     Support/            Checksums, sanitising, throughput
   Sources/porterctl/       Read-only diagnostic CLI
-  Tests/                172 tests
+  Tests/                Swift package tests
 App/                    The SwiftUI app
-Android/                Companion app for local Wi-Fi transfers
+FileProvider/           Read-only Finder extension
+FileProviderShared/     App-Group request and metadata types
 project.yml             XcodeGen input; generates Porter.xcodeproj
 ```
 
@@ -144,18 +162,31 @@ cd Kit && swift test
 ```
 
 ```bash
-xcodegen generate && open Porter.xcodeproj
+rm -rf build/Porter.app build/DerivedData
+xcodegen generate
+xcodebuild -project Porter.xcodeproj -scheme Porter -configuration Release \
+  -derivedDataPath build/DerivedData build
+ditto build/DerivedData/Build/Products/Release/Porter.app build/Porter.app
+codesign --verify --deep --strict build/Porter.app
+rm -rf build/DerivedData
+```
+
+Every app build replaces the previous output at `build/Porter.app`. Build
+intermediates use `build/DerivedData` and are removed after verification. The
+repository-wide build and sandbox rules are in [AGENTS.md](AGENTS.md).
+
+Browser state checks run without launching the app or contacting a phone:
+
+```bash
+bash Scripts/test-browser-state.sh
 ```
 
 macOS 14+, Xcode 26. The app target needs a signing team; set `DEVELOPMENT_TEAM`
 in `project.yml`.
 
-The Android companion uses JDK 17, Android SDK platform 35, and Gradle 9.6 or
-newer. With an Android SDK configured locally:
-
-```bash
-cd Android && ./gradlew :app:assembleDebug
-```
+The Xcode project compiles the `Kit/Sources/PorterKit` sources as a local static
+library target. `Kit/` also remains a Swift package for tests and the diagnostic
+CLI. Building the app does not require Swift package resolution.
 
 ## The diagnostic CLI
 
@@ -185,8 +216,7 @@ that interface on each subsequent attach. The two MTP commands do not use ADB.
 **Transport and interface.** `ADBTransport` is preferred because it can seek
 within a file, hash a file in place, report reliable sizes, and set an mtime.
 `MTPTransport` is the direct USB fallback for phones without USB debugging.
-`WiFiTransport` speaks to the paired local Android companion. Each publishes
-`TransportCapabilities`, and the engine reads those rather than switching on
+Both publish `TransportCapabilities`, and the engine reads those rather than switching on
 the transport kind.
 
 **Partial files.** In-flight bytes live in a `.porterpart` sidecar. The real
@@ -194,7 +224,7 @@ filename only appears once the file is complete. ADB can resume an aligned
 partial after a disconnect; MTP deliberately restarts it because ranged reads
 and resumable writes are not dependable across Android MTP implementations.
 
-**Verification.** With ADB or paired Wi-Fi, the device hashes its own copy and
+**Verification.** With ADB, the device hashes its own copy and
 Porter hashes its copy; a mismatch discards the result. MTP has no device-side
 checksum operation, so an MTP transfer can complete but is marked *unverified*.
 

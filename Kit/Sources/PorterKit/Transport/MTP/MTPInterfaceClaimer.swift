@@ -39,6 +39,9 @@ public final class MTPInterfaceClaimer: @unchecked Sendable {
         public var productName: String?
         /// Nil when the claim succeeded.
         public var lostTo: String?
+        /// PID of the owner at the time of the failed claim, when IOKit reports it.
+        public var ownerPID: Int?
+        public var blockedByAnotherProcess: Bool
         public var failure: String?
         /// How long the claim itself took, from the notification to the answer.
         public var duration: TimeInterval
@@ -76,7 +79,7 @@ public final class MTPInterfaceClaimer: @unchecked Sendable {
     /// won or lost.
     public func start(onAttempt: (@Sendable (Attempt) -> Void)? = nil) {
         queue.async { [self] in
-            lock.withLock { self.onAttempt = onAttempt }
+            if let onAttempt { lock.withLock { self.onAttempt = onAttempt } }
             guard !isRunning else { return }
             guard let port = IONotificationPortCreate(kIOMainPortDefault) else { return }
             isRunning = true
@@ -196,15 +199,22 @@ public final class MTPInterfaceClaimer: @unchecked Sendable {
         var attempt = Attempt(
             at: started, locationID: locationID, vendorID: vendorID, productID: productID,
             productName: properties["USB Product Name"] as? String,
-            lostTo: nil, failure: nil, duration: 0)
+            lostTo: nil, ownerPID: nil, blockedByAnotherProcess: false,
+            failure: nil, duration: 0)
 
         do {
             let interface = try MTPUSBInterface.claim(service: service)
             lock.withLock { claims[locationID] = interface }
         } catch {
-            attempt.lostTo = MTPUSBLocator.exclusiveOwner(of: service)
-            attempt.failure = (error as? TransferError)?.errorDescription
-                ?? error.localizedDescription
+            if let busy = error as? MTPUSBInterface.ClaimBusy {
+                attempt.blockedByAnotherProcess = true
+                attempt.lostTo = busy.ownerName
+                attempt.ownerPID = busy.ownerPID
+                attempt.failure = MTPUSBLocator.exclusiveAccessError(owner: busy.ownerName).errorDescription
+            } else {
+                attempt.failure = (error as? TransferError)?.errorDescription
+                    ?? error.localizedDescription
+            }
         }
         attempt.duration = Date().timeIntervalSince(started)
 

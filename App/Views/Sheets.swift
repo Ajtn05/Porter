@@ -1,67 +1,6 @@
 import PorterKit
 import SwiftUI
 
-struct WiFiPairingSheet: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
-    @State private var host = ""
-    @State private var code = ""
-    @State private var fingerprint = ""
-
-    var body: some View {
-        @Bindable var model = model
-
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Pair Wi-Fi Phone")
-                .font(.title2.weight(.semibold))
-            Text("Open Porter Companion on the phone, start sharing, then enter its local address, six-digit code, and certificate fingerprint.")
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            TextField("Phone address", text: $host, prompt: Text("192.168.1.42"))
-                .textFieldStyle(.roundedBorder)
-                .disabled(model.isPairingWiFi)
-            TextField("Six-digit code", text: $code)
-                .textFieldStyle(.roundedBorder)
-                .monospacedDigit()
-                .onChange(of: code) { _, value in
-                    code = String(value.filter(\.isNumber).prefix(6))
-                }
-                .disabled(model.isPairingWiFi)
-            TextField("Certificate fingerprint", text: $fingerprint, prompt: Text("64-character SHA-256"))
-                .textFieldStyle(.roundedBorder)
-                .fontDesign(.monospaced)
-                .onChange(of: fingerprint) { _, value in
-                    fingerprint = String(value.lowercased().filter(\.isHexDigit).prefix(64))
-                }
-                .disabled(model.isPairingWiFi)
-            Text("Copy the fingerprint exactly from the companion. It prevents a different device on the network from being paired.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            if let error = model.wifiPairingError {
-                Text(error)
-                    .font(.callout)
-                    .foregroundStyle(.red)
-            }
-
-            HStack {
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                    .disabled(model.isPairingWiFi)
-                Spacer()
-                Button(model.isPairingWiFi ? "Pairing…" : "Pair") {
-                    model.pairWiFiPhone(host: host, code: code, fingerprint: fingerprint)
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || code.count != 6 || fingerprint.count != 64 || model.isPairingWiFi)
-            }
-        }
-        .padding(24)
-        .frame(width: 460)
-    }
-}
-
 struct RenameSheet: View {
     var title: String = "Rename"
     let currentName: String
@@ -222,11 +161,27 @@ struct WarningsSheet: View {
 
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
+    @AppStorage("showMenuBarExtra") private var showMenuBarExtra = true
     @AppStorage("verifyChecksums") private var verifyChecksums = true
     @AppStorage("maximumConcurrency") private var maximumConcurrency = 3
 
     var body: some View {
+        @Bindable var model = model
         Form {
+            Section("Appearance") {
+                Toggle("Show Porter in the menu bar", isOn: $showMenuBarExtra)
+                Toggle("Show Mac preview sidebar", isOn: $model.showMacPreview)
+                Toggle("Show Android preview sidebar", isOn: $model.showAndroidPreview)
+            }
+            Section("This Mac") {
+                PaneSettings(preferences: $model.macView)
+            }
+            Section("Android") {
+                PaneSettings(preferences: $model.androidView)
+                Toggle("Download files when fast icon previews are unavailable", isOn: $model.downloadIconFallbacks)
+                Text("MTP uses thumbnails supplied by the phone. Full-file fallbacks are slower, limited to 16 MB per file and 64 MB per folder visit. Previews pause during directory loading and transfers.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Transfers") {
                 Toggle("Verify every file with a checksum", isOn: $verifyChecksums)
                 Text("Compares a hash computed on the phone with one computed here. Turning this off is faster on very large batches, but a corrupted file will not be noticed.")
@@ -240,12 +195,29 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460)
+        .frame(width: 500, height: 660)
         .onChange(of: verifyChecksums) { _, newValue in
             Task { await model.engine.setVerifiesChecksums(newValue) }
         }
         .onChange(of: maximumConcurrency) { _, newValue in
             Task { await model.engine.setMaximumConcurrency(newValue) }
         }
+    }
+}
+
+private struct PaneSettings: View {
+    @Binding var preferences: PanePreferences
+
+    var body: some View {
+        Picker("View", selection: $preferences.viewMode) {
+            Text("List").tag(ViewMode.list)
+            Text("Icons").tag(ViewMode.grid)
+        }
+        Picker("Sort by", selection: $preferences.sortField) {
+            ForEach(SortField.allCases) { Text($0.title).tag($0) }
+        }
+        Toggle("Sort ascending", isOn: $preferences.sortAscending)
+        Toggle("Show hidden files", isOn: $preferences.showHiddenFiles)
+        Toggle("Show icon previews", isOn: $preferences.showThumbnails)
     }
 }

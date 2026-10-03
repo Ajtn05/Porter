@@ -317,6 +317,47 @@ struct MTPSessionTests {
         #expect(results == [[65537], [65538]])
     }
 
+    @Test("A late reply from an older request cannot satisfy the next one")
+    func staleReplyIsDiscarded() async throws {
+        let (session, _) = try await openedSession([
+            MTPWire.response(.ok, transaction: 0),
+            MTPWire.data(.getStorageIDs, transaction: 1,
+                         payload: MTPWire.uint32Array([65537])),
+            MTPWire.response(.ok, transaction: 1)
+        ])
+
+        #expect(try await session.storageIDs() == [65537])
+    }
+
+    @Test("An empty storage-info response is retried once")
+    func emptyStorageInfoIsRetried() async throws {
+        let (session, pipe) = try await openedSession([
+            MTPWire.response(.ok, transaction: 1),
+            MTPWire.data(.getStorageInfo, transaction: 2,
+                         payload: MTPWire.storageInfo(description: "Internal storage",
+                                                      capacity: 1000, free: 500)),
+            MTPWire.response(.ok, transaction: 2)
+        ])
+
+        let info = try await session.storageInfo(65537)
+        #expect(info.description == "Internal storage")
+        let writes = await pipe.written
+        #expect(writes.count == 4) // Two handshake commands, two storage-info requests.
+    }
+
+    @Test("Repeated empty storage-info responses describe the phone's failure")
+    func repeatedEmptyStorageInfoIsStalled() async throws {
+        let (session, _) = try await openedSession([
+            MTPWire.response(.ok, transaction: 1),
+            MTPWire.response(.ok, transaction: 2)
+        ])
+
+        await #expect(throws: TransferError.deviceStalled(
+            reason: "the phone returned no storage details for its file-transfer volume")) {
+            _ = try await session.storageInfo(65537)
+        }
+    }
+
     @Test("Regression: a folder is not listed as a child of itself")
     func propertyListDropsTheParentRow() async throws {
         // GetObjectPropList at depth 1 answers with the folder that was asked
@@ -460,6 +501,48 @@ struct MTPSessionTests {
         #expect(writes.count == expectedWrites)
     }
 
+    @Test("Regression: browsing waits until both upload phases finish")
+    func uploadKeepsThePipe() async throws {
+        let sandbox = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: sandbox, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: sandbox) }
+
+        let payload = Data(repeating: 0xA5, count: 1024)
+        let local = sandbox.appendingPathComponent("clip.bin")
+        try payload.write(to: local)
+        let (session, pipe) = try await openedSession([
+            MTPWire.response(.ok, transaction: 1, parameters: [65537, 12, 2001]),
+            MTPWire.response(.ok, transaction: 2),
+            MTPWire.data(.getStorageIDs, transaction: 3,
+                         payload: MTPWire.uint32Array([65537])),
+            MTPWire.response(.ok, transaction: 3)
+        ])
+        await pipe.pauseNextWrite(ofLength: payload.count)
+        let info = MTPObjectInfo(storageID: 65537, objectFormat: MTPObjectFormat.undefined,
+                                 size: Int64(payload.count), parentHandle: 12, filename: "clip.bin")
+
+        let upload = Task {
+            try await session.sendObject(info: info, from: local, size: Int64(payload.count),
+                                         progress: { _ in })
+        }
+        for _ in 0..<100 where !(await pipe.hasPausedWrite) {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        let paused = await pipe.hasPausedWrite
+        #expect(paused)
+        guard paused else { upload.cancel(); return }
+
+        let browse = Task { try await session.storageIDs() }
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(await pipe.written.count == 8)
+
+        await pipe.resumeWrite()
+        #expect(try await upload.value == 2001)
+        #expect(try await browse.value == [65537])
+        #expect(await pipe.written.count == 9)
+    }
+
     @Test("A file that runs short mid-push fails instead of reporting success")
     func truncatedPushIsRefused() async throws {
         let sandbox = FileManager.default.temporaryDirectory
@@ -494,6 +577,21 @@ struct MTPSessionTests {
         let collected = CollectorBox()
         try await session.readObject(handle: 42) { chunk in collected.append(chunk) }
         #expect(collected.data == payload)
+    }
+
+    @Test("A late data phase is not delivered to the current file read")
+    func staleObjectDataIsDiscarded() async throws {
+        let expected = Data("current".utf8)
+        let (session, _) = try await openedSession([
+            MTPWire.data(.getObject, transaction: 0, payload: Data("old".utf8)),
+            MTPWire.response(.ok, transaction: 0),
+            MTPWire.data(.getObject, transaction: 1, payload: expected),
+            MTPWire.response(.ok, transaction: 1)
+        ])
+
+        let collected = CollectorBox()
+        try await session.readObject(handle: 42) { chunk in collected.append(chunk) }
+        #expect(collected.data == expected)
     }
 }
 
@@ -603,13 +701,10 @@ struct MTPTransportTests {
     func folderListingUsesOneTransaction() async throws {
         let (transport, backend, _) = await makeTransport()
 
-        // Warms the walk down to DCIM. The store root is listed the slow way on
-        // purpose: GetObjectPropList reads the root sentinel as every object on
-        // the device, so the top level pays for handles one at a time and every
-        // level below it does not.
+        // Root and ordinary folders both use property lists when available.
         _ = try await transport.list(RemotePath("/65537/DCIM"))
         let objectInfoCallsBefore = await backend.objectInfoCalls
-        #expect(objectInfoCallsBefore > 0)
+        #expect(objectInfoCallsBefore == 0)
 
         let entries = try await transport.list(RemotePath("/65537/DCIM/Camera"))
         #expect(entries.map(\.name) == ["IMG_0001.JPG", "IMG_0002.JPG"])
@@ -729,6 +824,30 @@ struct MTPTransportTests {
         #expect(sent[0].size == 700)
         #expect(progress.latest == 700)
         #expect(try await transport.stat(RemotePath("/65537/Download/notes.txt"))?.size == 700)
+    }
+
+    @Test("A batch of uploads reuses its destination folder handle")
+    func uploadsKeepParentCached() async throws {
+        let (transport, backend, _) = await makeTransport()
+        let sandbox = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: sandbox, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: sandbox) }
+        let local = sandbox.appendingPathComponent("tiny.bin")
+        try Data([0x41]).write(to: local)
+
+        try await transport.writeFile(from: local,
+                                      to: RemotePath("/65537/DCIM/Camera/first.bin"),
+                                      destinationOffset: 0, progress: { _ in })
+        let firstWalks = await backend.handleListings + backend.propertyListCalls
+
+        try await transport.writeFile(from: local,
+                                      to: RemotePath("/65537/DCIM/Camera/second.bin"),
+                                      destinationOffset: 0, progress: { _ in })
+        let secondWalks = await backend.handleListings + backend.propertyListCalls
+        #expect(firstWalks > 0)
+        #expect(secondWalks == firstWalks)
+        #expect(await backend.sentObjects.count == 2)
     }
 
     @Test("A phone that only says \"full\" gets the numbers put back in on this side")

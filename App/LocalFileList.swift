@@ -41,23 +41,3 @@ struct LocalFile: Identifiable, Hashable, Sendable {
         }
     }
 }
-
-/// Sort field for both panes. Held in the model so the panes stay in step and
-/// the choice survives navigating into a folder.
-enum SortField: String, CaseIterable, Identifiable {
-    case name, size, modified
-    var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .name: return "Name"
-        case .size: return "Size"
-        case .modified: return "Date Modified"
-        }
-    }
-}
-
-enum ViewMode: Int, CaseIterable, Identifiable {
-    case list = 1
-    case grid = 2
-    var id: Int { rawValue }
-}

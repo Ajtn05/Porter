@@ -22,16 +22,6 @@ struct ContentView: View {
                 TransferDrawer()
             }
             .toolbar { BrowserToolbar() }
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        model.showWiFiPairing = true
-                    } label: {
-                        Label("Pair Wi-Fi Phone", systemImage: "wifi.badge.plus")
-                    }
-                    .help("Pair a phone running Porter Companion on this network")
-                }
-            }
         }
         .sheet(item: $model.pendingConflict) { conflict in
             ConflictSheet(conflict: conflict)
@@ -39,9 +29,62 @@ struct ContentView: View {
         .sheet(isPresented: $model.showWarnings) {
             WarningsSheet(warnings: model.planWarnings)
         }
-        .sheet(isPresented: $model.showWiFiPairing) {
-            WiFiPairingSheet()
+        .alert(
+            "Finder",
+            isPresented: Binding(
+                get: { model.finderDomainMessage != nil },
+                set: { if !$0 { model.finderDomainMessage = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { model.finderDomainMessage = nil }
+        } message: {
+            Text(model.finderDomainMessage ?? "")
         }
+        .sheet(item: Binding(
+            get: { model.currentMTPConflict },
+            set: { if $0 == nil, let current = model.currentMTPConflict {
+                model.dismissMTPConflict(locationID: current.locationID)
+            } }
+        )) { conflict in
+            MTPConflictSheet(conflict: conflict)
+        }
+    }
+}
+
+private struct MTPConflictSheet: View {
+    @Environment(AppModel.self) private var model
+    let conflict: MTPConflict
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Label("MTP connection in use", systemImage: "cable.connector")
+                .font(.title2.bold())
+
+            if conflict.isSystemOwner {
+                Text("macOS opened \(conflict.phoneName) for camera import before Porter could claim MTP. Keep Porter running, then unplug and reconnect the phone. macOS does not let Porter close this system service.")
+            } else if conflict.runningApp != nil {
+                Text("\(conflict.ownerName) is using \(conflict.phoneName)'s MTP connection. Ask it to quit, then unplug and reconnect the phone so Porter can claim MTP first.")
+            } else {
+                Text("\(conflict.ownerName) is using \(conflict.phoneName)'s MTP connection. Close that service, then unplug and reconnect the phone so Porter can claim MTP first.")
+            }
+
+            if let error = model.mtpQuitError {
+                Text(error).foregroundStyle(.red)
+            }
+
+            HStack {
+                Spacer()
+                Button("Later") { model.dismissMTPConflict(locationID: conflict.locationID) }
+                if conflict.runningApp != nil {
+                    Button("Quit \(conflict.ownerName)") {
+                        model.quitMTPConflictOwner(conflict)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+        }
+        .padding(24)
+        .frame(width: 480)
     }
 }
 
@@ -50,34 +93,20 @@ struct BrowserToolbar: ToolbarContent {
 
     var body: some ToolbarContent {
         ToolbarItemGroup {
-            Picker("View", selection: Binding(get: { model.viewMode }, set: { model.viewMode = $0 })) {
-                Image(systemName: "list.bullet").tag(ViewMode.list)
-                Image(systemName: "square.grid.2x2").tag(ViewMode.grid)
-            }
-            .pickerStyle(.segmented)
-            .help("Switch between list and icon view")
-
-            Menu {
-                Picker("Sort By", selection: Binding(get: { model.sortField }, set: { model.sortField = $0 })) {
-                    ForEach(SortField.allCases) { field in
-                        Text(field.title).tag(field)
-                    }
-                }
-                Divider()
-                Toggle("Ascending", isOn: Binding(get: { model.sortAscending }, set: { model.sortAscending = $0 }))
-                Toggle("Show Hidden Files", isOn: Binding(
-                    get: { model.showHiddenFiles }, set: { model.showHiddenFiles = $0 }
-                ))
-            } label: {
-                Label("Sort", systemImage: "arrow.up.arrow.down")
-            }
-
             Button {
                 Task { await model.refreshBothPanes() }
             } label: {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
             .help("Refresh both panes")
+
+            Button {
+                model.showSelectedDeviceInFinder()
+            } label: {
+                Label("Add to Finder", systemImage: "folder.badge.plus")
+            }
+            .disabled(model.selectedDevice?.readiness.isBrowsable != true)
+            .help("Make this phone available in Finder")
         }
     }
 }

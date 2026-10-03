@@ -316,7 +316,15 @@ public actor ADBTransport: DeviceTransport {
 
     public func readStream(_ path: RemotePath, range: ByteRange) async throws -> AsyncThrowingStream<Data, any Error> {
         let command: String
-        if range.offset == 0 {
+        if let length = range.length {
+            guard length >= 0 else {
+                throw TransferError.protocolError("a byte range cannot have a negative length")
+            }
+            // `tail` seeks to the offset without a byte-at-a-time `dd`, and
+            // `head` stops the pipe exactly at the requested end. File Provider
+            // reads in bounded chunks through this path.
+            command = "tail -c +\(range.offset + 1) \(path.shellQuoted) | head -c \(length)"
+        } else if range.offset == 0 {
             command = "cat \(path.shellQuoted)"
         } else if range.offset % TransferChunk.blockSize == 0 {
             // Block-aligned by construction, so plain `skip=` works on every

@@ -12,6 +12,8 @@ actor FakeMTPPipe: MTPPipe {
     private var pending: [Data]
     private(set) var written: [Data] = []
     private(set) var isClosed = false
+    private var pausedWriteLength: Int?
+    private var pausedWrite: CheckedContinuation<Void, Never>?
 
     init(maximumPacketSize: Int = 512, reads: [Data] = []) {
         self.maximumPacketSize = maximumPacketSize
@@ -20,7 +22,17 @@ actor FakeMTPPipe: MTPPipe {
 
     func enqueue(_ blobs: Data...) { pending.append(contentsOf: blobs) }
 
-    func write(_ data: Data) async throws { written.append(data) }
+    func write(_ data: Data) async throws {
+        written.append(data)
+        if pausedWriteLength == data.count {
+            pausedWriteLength = nil
+            await withCheckedContinuation { pausedWrite = $0 }
+        }
+    }
+
+    func pauseNextWrite(ofLength length: Int) { pausedWriteLength = length }
+    var hasPausedWrite: Bool { pausedWrite != nil }
+    func resumeWrite() { pausedWrite?.resume(); pausedWrite = nil }
 
     func read(maximumLength: Int) async throws -> Data {
         guard !pending.isEmpty else { return Data() }
@@ -125,6 +137,8 @@ enum MTPWire {
 actor FakeMTPBackend: MTPBackend {
     var objects: [UInt32: MTPObject] = [:]
     var contents: [UInt32: Data] = [:]
+    var thumbnails: [UInt32: Data] = [:]
+    private(set) var thumbnailCalls = 0
     var storages: [UInt32: MTPStorageInfo] = [:]
     var supportsPropertyLists = true
     var refusesPushesAsFull = false
@@ -221,15 +235,19 @@ actor FakeMTPBackend: MTPBackend {
         )
     }
 
+    func setThumbnail(_ data: Data, for handle: UInt32) { thumbnails[handle] = data }
+    func thumbnail(_ handle: UInt32, path: RemotePath?) async throws -> Data? {
+        thumbnailCalls += 1
+        return thumbnails[handle]
+    }
+
     func objectSize(_ handle: UInt32, path: RemotePath?) async throws -> Int64? {
         sizeCalls += 1
         return objects[handle]?.size
     }
 
     func children(ofParent parent: UInt32, storage: UInt32, path: RemotePath?) async throws -> [MTPObject]? {
-        // Matches the real session: the store root is never asked this way,
-        // because the sentinel means "every object on the device" there.
-        guard supportsPropertyLists, parent != MTPHandle.root else { return nil }
+        guard supportsPropertyLists else { return nil }
         propertyListCalls += 1
         return children(of: parent, storage: storage)
     }

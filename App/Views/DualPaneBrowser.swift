@@ -43,42 +43,75 @@ struct MacPane: View {
     @State private var isCreatingFolder = false
 
     var body: some View {
+        @Bindable var model = model
         VStack(spacing: 0) {
             PaneHeader(
                 title: "This Mac",
                 icon: "laptopcomputer",
                 canGoUp: model.localDirectory.path != "/",
                 onGoUp: { model.localGoUp() },
-                trailing: { AnyView(EmptyView()) }
+                trailing: {
+                    AnyView(
+                        HStack(spacing: 6) {
+                            PaneViewControls(preferences: $model.macView)
+                            Button { model.showMacPreview.toggle() } label: {
+                                Image(systemName: "sidebar.right")
+                            }
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(model.showMacPreview ? Color.accentColor : .secondary)
+                            .help(model.showMacPreview ? "Hide Mac preview" : "Show Mac preview")
+                            .accessibilityLabel("Show Mac preview")
+                        }
+                    )
+                }
             )
 
             LocalBreadcrumbBar(directory: model.localDirectory) { model.open(localDirectory: $0) }
 
-            FileTable(
-                rows: model.localEntries.map(FileRow.init),
-                selection: Binding(get: { model.localSelection }, set: { model.localSelection = $0 }),
-                viewMode: model.viewMode,
-                onOpen: { id in
-                    guard let file = model.localEntries.first(where: { $0.id == id }) else { return }
-                    if file.isDirectory { model.open(localDirectory: file.url) }
-                    else { NSWorkspace.shared.open(file.url) }
-                },
-                onRename: { id in renaming = model.localEntries.first { $0.id == id } },
-                onDelete: { model.trashSelectedOnMac() },
-                onCopyAcross: { model.copySelectionToDevice() },
-                copyAcrossTitle: "Copy to Device",
-                dragProvider: { id in
-                    model.localEntries.first { $0.id == id }?.url
+            HSplitView {
+                FileTable(
+                    rows: model.localEntries.map(FileRow.init),
+                    selection: Binding(get: { model.localSelection }, set: { model.localSelection = $0 }),
+                    viewMode: model.macView.viewMode,
+                    onOpen: { id in
+                        guard let file = model.localEntries.first(where: { $0.id == id }) else { return }
+                        if file.isDirectory { model.open(localDirectory: file.url) }
+                        else { NSWorkspace.shared.open(file.url) }
+                    },
+                    onRename: { id in renaming = model.localEntries.first { $0.id == id } },
+                    onDelete: { model.trashSelectedOnMac() },
+                    onCopyAcross: { model.copySelectionToDevice() },
+                    copyAcrossTitle: "Copy to Device",
+                    dragProvider: { id in
+                        model.localEntries.first { $0.id == id }?.url
+                    },
+                    remoteFolderDrop: { payloads, folderID in
+                        guard let drag = payloads.first,
+                              let device = model.devices.first(where: { $0.id.rawValue == drag.deviceID }),
+                              let folder = model.localEntries.first(where: { $0.id == folderID }),
+                              folder.isDirectory else { return false }
+                        let files = model.deviceEntries.filter { drag.paths.contains($0.path.string) }
+                        guard !files.isEmpty else { return false }
+                        model.copyToMac(files, from: device, into: folder.url)
+                        return true
+                    },
+                    thumbnailProvider: model.macView.showThumbnails ? { row in try await model.thumbnail(for: row) } : nil,
+                    thumbnailRevision: "\(model.macView.showThumbnails)"
+                )
+                .dropDestination(for: RemoteFileDrag.self) { payload, _ in
+                    guard let drag = payload.first,
+                          let device = model.devices.first(where: { $0.id.rawValue == drag.deviceID }) else { return false }
+                    let files = model.deviceEntries.filter { drag.paths.contains($0.path.string) }
+                    model.copyToMac(files, from: device, into: model.localDirectory)
+                    return true
+                } isTargeted: { isTargeted = $0 }
+                .overlay { DropHighlight(isActive: isTargeted) }
+                .frame(minWidth: 220, maxWidth: .infinity, maxHeight: .infinity)
+                if model.showMacPreview {
+                    MacPreviewSidebar()
+                        .frame(minWidth: 180, idealWidth: 220, maxWidth: 320, maxHeight: .infinity)
                 }
-            )
-            .dropDestination(for: RemoteFileDrag.self) { payload, _ in
-                guard let drag = payload.first,
-                      let device = model.devices.first(where: { $0.id.rawValue == drag.deviceID }) else { return false }
-                let files = model.deviceEntries.filter { drag.paths.contains($0.path.string) }
-                model.copyToMac(files, from: device, into: model.localDirectory)
-                return true
-            } isTargeted: { isTargeted = $0 }
-            .overlay { DropHighlight(isActive: isTargeted) }
+            }
         }
         .background(.background)
         .onReceive(NotificationCenter.default.publisher(for: .newFolderRequested)) { _ in
@@ -104,6 +137,7 @@ struct DevicePane: View {
     @State private var isConfirmingDelete = false
 
     var body: some View {
+        @Bindable var model = model
         VStack(spacing: 0) {
             PaneHeader(
                 title: model.selectedDevice?.displayName ?? "Device",
@@ -112,10 +146,16 @@ struct DevicePane: View {
                 onGoUp: { model.deviceGoUp() },
                 trailing: {
                     AnyView(
-                        Group {
-                            if model.isLoadingDevice {
-                                ProgressView().controlSize(.small)
+                        HStack(spacing: 6) {
+                            if model.isLoadingDevice { ProgressView().controlSize(.small) }
+                            PaneViewControls(preferences: $model.androidView)
+                            Button { model.showAndroidPreview.toggle() } label: {
+                                Image(systemName: "sidebar.right")
                             }
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(model.showAndroidPreview ? Color.accentColor : .secondary)
+                            .help(model.showAndroidPreview ? "Hide Android preview" : "Show Android preview")
+                            .accessibilityLabel("Show Android preview")
                         }
                     )
                 }
@@ -135,28 +175,48 @@ struct DevicePane: View {
                 }
             }
 
-            FileTable(
-                rows: model.deviceEntries.map(FileRow.init),
-                selection: Binding(get: { model.deviceSelection }, set: { model.deviceSelection = $0 }),
-                viewMode: model.viewMode,
-                onOpen: { id in
-                    guard let file = model.deviceEntries.first(where: { $0.id == id }), file.isDirectory else { return }
-                    Task { await model.open(devicePath: file.path) }
-                },
-                onRename: { id in renaming = model.deviceEntries.first { $0.id == id } },
-                onDelete: { isConfirmingDelete = true },
-                onCopyAcross: { model.copySelectionToMac() },
-                copyAcrossTitle: "Copy to Mac",
-                remoteDragProvider: { ids in
-                    guard let deviceID = model.selectedDeviceID else { return nil }
-                    return RemoteFileDrag(deviceID: deviceID.rawValue, paths: Array(ids))
+            HSplitView {
+                FileTable(
+                    rows: model.deviceEntries.map(FileRow.init),
+                    selection: Binding(get: { model.deviceSelection }, set: { model.deviceSelection = $0 }),
+                    viewMode: model.androidView.viewMode,
+                    onOpen: { id in
+                        guard let file = model.deviceEntries.first(where: { $0.id == id }), file.isDirectory else { return }
+                        Task { await model.open(devicePath: file.path) }
+                    },
+                    onRename: { id in renaming = model.deviceEntries.first { $0.id == id } },
+                    onDelete: { isConfirmingDelete = true },
+                    onCopyAcross: { model.copySelectionToMac() },
+                    copyAcrossTitle: "Copy to Mac",
+                    remoteDragProvider: { ids in
+                        guard let deviceID = model.selectedDeviceID else { return nil }
+                        return RemoteFileDrag(deviceID: deviceID.rawValue, paths: Array(ids))
+                    },
+                    localFolderDrop: { urls, folderID in
+                        guard let folder = model.deviceEntries.first(where: { $0.id == folderID }),
+                              folder.isDirectory else { return false }
+                        model.copyToDevice(urls, into: folder.path)
+                        return true
+                    },
+                    previewProvider: { id in
+                        try await model.preparePreview(for: id)
+                    },
+                    thumbnailProvider: model.androidView.showThumbnails ? { row in
+                        try await model.thumbnail(for: row, isIcon: !(model.deviceSelection.count == 1 && model.deviceSelection.contains(row.id)))
+                    } : nil,
+                    thumbnailRevision: "\(model.previewGeneration):\(model.androidView.showThumbnails):\(model.summary.isRunning):\(model.isLoadingDevice):\(model.downloadIconFallbacks)"
+                )
+                .dropDestination(for: URL.self) { urls, _ in
+                    model.copyToDevice(urls, into: model.devicePath)
+                    return true
+                } isTargeted: { isTargeted = $0 }
+                .overlay { DropHighlight(isActive: isTargeted) }
+                .frame(minWidth: 220, maxWidth: .infinity, maxHeight: .infinity)
+                if model.showAndroidPreview {
+                    AndroidPreviewSidebar()
+                        .frame(minWidth: 180, idealWidth: 220, maxWidth: 320, maxHeight: .infinity)
                 }
-            )
-            .dropDestination(for: URL.self) { urls, _ in
-                model.copyToDevice(urls, into: model.devicePath)
-                return true
-            } isTargeted: { isTargeted = $0 }
-            .overlay { DropHighlight(isActive: isTargeted) }
+            }
         }
         .background(.background)
         .sheet(item: $renaming) { file in
@@ -237,5 +297,47 @@ struct InlineErrorBanner: View {
         }
         .padding(10)
         .background(Color.orange.opacity(0.12))
+    }
+}
+
+/// Shared controls bind to the preferences of just one pane.
+struct PaneViewMenu: View {
+    @Binding var preferences: PanePreferences
+
+    var body: some View {
+        Picker("View", selection: $preferences.viewMode) {
+            Text("List").tag(ViewMode.list)
+            Text("Icons").tag(ViewMode.grid)
+        }
+        Picker("Sort By", selection: $preferences.sortField) {
+            ForEach(SortField.allCases) { Text($0.title).tag($0) }
+        }
+        Toggle("Ascending", isOn: $preferences.sortAscending)
+        Divider()
+        Toggle("Show Hidden Files", isOn: $preferences.showHiddenFiles)
+        Toggle("Show Icon Previews", isOn: $preferences.showThumbnails)
+    }
+}
+
+struct PaneViewControls: View {
+    @Binding var preferences: PanePreferences
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Picker("View", selection: $preferences.viewMode) {
+                Image(systemName: "list.bullet").tag(ViewMode.list)
+                Image(systemName: "square.grid.2x2").tag(ViewMode.grid)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 68)
+            .help("View this pane as a list or icons")
+            Menu { PaneViewMenu(preferences: $preferences) } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("View options for this pane")
+        }
     }
 }

@@ -22,7 +22,7 @@ struct ADBParsingTests {
         #expect(devices[0].readiness == .ready)
         #expect(devices[0].model == "SM A526U")
         #expect(devices[1].readiness == .unauthorized)
-        #expect(devices[2].isWireless)
+        #expect(devices[2].isNetworkAddress)
         #expect(devices[2].model == "Pixel 5")
     }
 

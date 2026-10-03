@@ -57,16 +57,3 @@ The tests that matter most:
 
 What they do **not** prove is that `ADBTransport` speaks to a real phone
 correctly. That needs hardware; see `Docs/status.md`.
-
-## Wi-Fi pairing boundary
-
-`WiFiPairingTests.swift` checks that a missing or malformed certificate
-fingerprint is rejected before the client opens a network connection. The
-fingerprint is intentionally an out-of-band value read from the Android
-companion: accepting a self-signed certificate and merely echoing its
-fingerprint in a response would not protect the first pairing from an active
-local-network peer.
-
-The remaining proof is integration testing with the Android companion: confirm
-that a correct fingerprint pairs, a changed certificate is rejected, and
-interrupted uploads and downloads resume through the HTTPS server.
