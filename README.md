@@ -13,6 +13,10 @@ it with resumable, checksum-verified ADB transfers and direct MTP support.
 
 ## Status
 
+Version 1.0.0 is being prepared as a GitHub release. The universal release build
+bundles ADB; public distribution signing and notarization are pending. See the
+[v1.0.0 release notes](Docs/releases/v1.0.0.md) for installation and known limits.
+
 Early functionality has been tested with a Galaxy S22 on Android 16. It can
 browse and copy over USB debugging (ADB) or normal File Transfer mode (MTP).
 
@@ -106,8 +110,8 @@ phone until it is unplugged.
    device compatibility before changing USB buffer sizes or transaction shape.
 3. **Phase 3:** photo import, watched folders, and APK sideloading.
 
-Signing, notarisation, and bundling `adb` are release work needed before the
-first build is handed to somebody else. Sustained multi-hour throughput also
+Developer ID signing and notarisation remain release work. The release script
+bundles a checksum-pinned ADB binary and its notices. Sustained multi-hour throughput also
 needs testing; it falls as the phone throttles under load.
 
 ## Layout
@@ -187,6 +191,20 @@ in `project.yml`.
 The Xcode project compiles the `Kit/Sources/PorterKit` sources as a local static
 library target. `Kit/` also remains a Swift package for tests and the diagnostic
 CLI. Building the app does not require Swift package resolution.
+
+### Release packaging
+
+```bash
+bash Scripts/fetch-platform-tools.sh
+bash Scripts/build-release.sh
+```
+
+The script builds both Mac architectures, verifies the embedded extension and
+bundled ADB, and writes a ZIP, source archive, checksums, and build metadata to
+`build/release/`. The single unpacked app remains at `build/Porter.app`.
+Without `PORTER_SIGNING_IDENTITY`, the output is ad hoc signed for testing and
+is not notarized. Set that variable to a Developer ID Application identity for
+distribution signing; notarization must still be completed separately.
 
 ## The diagnostic CLI
 
