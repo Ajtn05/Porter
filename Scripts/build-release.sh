@@ -31,7 +31,9 @@ adb="$app/Contents/Resources/platform-tools/adb"
 [[ -x "$adb" && -s "$app/Contents/Resources/platform-tools/NOTICE.txt" ]]
 [[ -s "$app/Contents/Resources/LICENSE" ]]
 for binary in "$app/Contents/MacOS/Porter" "$extension/Contents/MacOS/PorterFileProvider" "$adb"; do
-    lipo -verify_arch arm64 x86_64 "$binary"
+    for architecture in arm64 x86_64; do
+        lipo -verify_arch "$architecture" "$binary"
+    done
 done
 
 identity="${PORTER_SIGNING_IDENTITY:--}"
