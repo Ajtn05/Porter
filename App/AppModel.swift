@@ -45,7 +45,14 @@ final class AppModel {
     // Device pane
     private(set) var devicePath: RemotePath = .root
     private(set) var deviceEntries: [RemoteFile] = []
-    var deviceSelection: Set<String> = []
+    var deviceSelection: Set<String> = [] {
+        didSet { deviceHistory.update(selection: deviceSelection, scrollAnchor: deviceScrollAnchor) }
+    }
+    private(set) var deviceHistory = BrowserHistory<RemotePath>()
+    var deviceScrollAnchor: String? {
+        didSet { deviceHistory.update(selection: deviceSelection, scrollAnchor: deviceScrollAnchor) }
+    }
+    private(set) var deviceScrollRevision = UUID()
     private(set) var deviceError: String?
     private(set) var isLoadingDevice = false
     private var deviceBrowseGeneration: UInt64 = 0
@@ -56,7 +63,63 @@ final class AppModel {
     var localDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Downloads", isDirectory: true)
     private(set) var localEntries: [LocalFile] = []
-    var localSelection: Set<String> = []
+    var localSelection: Set<String> = [] {
+        didSet { localHistory.update(selection: localSelection, scrollAnchor: localScrollAnchor) }
+    }
+    private(set) var localHistory = BrowserHistory<URL>()
+    var localScrollAnchor: String? {
+        didSet { localHistory.update(selection: localSelection, scrollAnchor: localScrollAnchor) }
+    }
+    private(set) var localScrollRevision = UUID()
+    var activePane: BrowserPane = .mac
+
+    var activeSelectionCount: Int {
+        activePane == .mac ? localSelection.count : deviceSelection.count
+    }
+
+    var canUseActivePane: Bool {
+        selectedDevice?.readiness.isBrowsable == true && (activePane == .mac || !isLoadingDevice)
+            && NSApp.keyWindow?.sheetParent == nil && !(NSApp.keyWindow?.firstResponder is NSTextView)
+    }
+
+    func requestBrowserCommand(_ command: BrowserCommand) {
+        guard canUseActivePane else { return }
+        NotificationCenter.default.post(name: .browserCommandRequested,
+                                        object: BrowserCommandRequest(pane: activePane, command: command))
+    }
+
+    func goBack(in pane: BrowserPane) {
+        activePane = pane
+        if pane == .mac {
+            guard let destination = localHistory.goBack() else { return }
+            restoreLocalLocation(destination)
+        } else if !isLoadingDevice, let destination = deviceHistory.backDestination {
+            let generation = deviceBrowseGeneration
+            Task {
+                guard deviceBrowseGeneration == generation else { return }
+                await navigateDevice(to: destination.path, mode: .back)
+            }
+        }
+    }
+
+    func goForward(in pane: BrowserPane) {
+        activePane = pane
+        if pane == .mac {
+            guard let destination = localHistory.goForward() else { return }
+            restoreLocalLocation(destination)
+        } else if !isLoadingDevice, let destination = deviceHistory.forwardDestination {
+            let generation = deviceBrowseGeneration
+            Task {
+                guard deviceBrowseGeneration == generation else { return }
+                await navigateDevice(to: destination.path, mode: .forward)
+            }
+        }
+    }
+
+    func goUpInActivePane() {
+        if activePane == .mac { localGoUp() }
+        else if !isLoadingDevice { deviceGoUp() }
+    }
 
     // Independent pane preferences
     var macView = PanePreferences.load("macBrowser") {
@@ -212,6 +275,10 @@ final class AppModel {
         selectedVolumeID = nil
         invalidatePreviewThumbnails(clearCache: true)
         deviceEntries = []
+        deviceSelection = []
+        deviceHistory.reset()
+        deviceScrollAnchor = nil
+        deviceScrollRevision = UUID()
         devicePath = .root
         deviceError = nil
         isLoadingDevice = false
@@ -293,6 +360,9 @@ final class AppModel {
         invalidatePreviewThumbnails(clearCache: true)
         deviceEntries = []
         deviceSelection = []
+        deviceHistory.reset()
+        deviceScrollAnchor = nil
+        deviceScrollRevision = UUID()
         devicePath = .root
         deviceError = nil
         isLoadingDevice = false
@@ -341,18 +411,38 @@ final class AppModel {
     }
 
     func selectVolume(_ id: String) {
+        guard selectedVolumeID != id else { return }
         selectedVolumeID = id
         guard let volume = selectedVolume else { return }
-        Task { await open(devicePath: volume.rootPath) }
+        deviceBrowseGeneration &+= 1
+        let generation = deviceBrowseGeneration
+        invalidatePreviewThumbnails()
+        deviceHistory.reset()
+        deviceEntries = []
+        deviceSelection = []
+        devicePath = volume.rootPath
+        deviceScrollAnchor = nil
+        deviceScrollRevision = UUID()
+        Task {
+            guard deviceBrowseGeneration == generation else { return }
+            await open(devicePath: volume.rootPath, generation: generation)
+        }
     }
 
     func open(devicePath path: RemotePath) async {
-        invalidatePreviewThumbnails()
-        deviceBrowseGeneration &+= 1
-        await open(devicePath: path, generation: deviceBrowseGeneration)
+        await navigateDevice(to: path, mode: .visit)
     }
 
-    private func open(devicePath path: RemotePath, generation: UInt64) async {
+    private enum NavigationMode { case visit, back, forward, refresh }
+
+    private func navigateDevice(to path: RemotePath, mode: NavigationMode) async {
+        guard let root = selectedVolume?.rootPath, path.relative(to: root) != nil else { return }
+        invalidatePreviewThumbnails()
+        deviceBrowseGeneration &+= 1
+        await open(devicePath: path, generation: deviceBrowseGeneration, mode: mode)
+    }
+
+    private func open(devicePath path: RemotePath, generation: UInt64, mode: NavigationMode = .visit) async {
         guard let device = selectedDevice else { return }
         isLoadingDevice = true
         deviceError = nil
@@ -363,9 +453,20 @@ final class AppModel {
             let transport = try await coordinator.transport(for: device.id)
             let entries = try await transport.list(path)
             guard selectedDeviceID == device.id, deviceBrowseGeneration == generation else { return }
+            let oldPath = devicePath
+            switch mode {
+            case .visit: deviceHistory.visit(path)
+            case .back: deviceHistory.goBack()
+            case .forward: deviceHistory.goForward()
+            case .refresh: break
+            }
+            let location = deviceHistory.current ?? BrowserLocation(path: path)
             devicePath = path
             deviceEntries = sorted(entries)
-            deviceSelection = []
+            let visible = Set(deviceEntries.map(\.id))
+            deviceSelection = location.selection.intersection(visible)
+            deviceScrollAnchor = location.scrollAnchor
+            if oldPath != path || mode != .refresh { deviceScrollRevision = UUID() }
             deviceError = nil
         } catch {
             guard selectedDeviceID == device.id, deviceBrowseGeneration == generation else { return }
@@ -382,7 +483,7 @@ final class AppModel {
         invalidatePreviewThumbnails(clearCache: true)
         let deviceID = selectedDeviceID
         let path = devicePath
-        await open(devicePath: devicePath)
+        await navigateDevice(to: devicePath, mode: .refresh)
         if deviceError == nil, let deviceID, selectedDeviceID == deviceID, devicePath == path {
             refreshFinderFolder(for: deviceID, path: path)
         }
@@ -392,19 +493,38 @@ final class AppModel {
         guard let parent = devicePath.parent,
               let root = selectedVolume?.rootPath,
               devicePath != root else { return }
-        Task { await open(devicePath: parent) }
+        let generation = deviceBrowseGeneration
+        Task {
+            guard deviceBrowseGeneration == generation else { return }
+            await open(devicePath: parent)
+        }
     }
 
     // MARK: - Local browsing
 
     func refreshLocalPane() {
+        localHistory.visit(localDirectory)
         localEntries = sorted(LocalFile.contents(of: localDirectory, includeHidden: macView.showHiddenFiles))
-        localSelection = []
+        localSelection.formIntersection(Set(localEntries.map(\.id)))
     }
 
     func open(localDirectory url: URL) {
+        guard url != localDirectory else { return }
+        localHistory.visit(localDirectory)
+        localHistory.visit(url)
         localDirectory = url
+        localSelection = []
+        localScrollAnchor = nil
         refreshLocalPane()
+        localScrollRevision = UUID()
+    }
+
+    private func restoreLocalLocation(_ location: BrowserLocation<URL>) {
+        localDirectory = location.path
+        localEntries = sorted(LocalFile.contents(of: localDirectory, includeHidden: macView.showHiddenFiles))
+        localSelection = location.selection.intersection(Set(localEntries.map(\.id)))
+        localScrollAnchor = location.scrollAnchor
+        localScrollRevision = UUID()
     }
 
     func localGoUp() {
@@ -425,7 +545,7 @@ final class AppModel {
         return visible.sorted { lhs, rhs in
             if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
             return precedes(lhs.name, rhs.name, lhs.size, rhs.size, lhs.modified, rhs.modified,
-                            lhs.id, rhs.id, preferences: androidView)
+                            lhs.id, rhs.id, lhs.isDirectory, preferences: androidView)
         }
     }
 
@@ -433,7 +553,7 @@ final class AppModel {
         files.sorted { lhs, rhs in
             if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
             return precedes(lhs.name, rhs.name, lhs.size, rhs.size, lhs.modified, rhs.modified,
-                            lhs.id, rhs.id, preferences: macView)
+                            lhs.id, rhs.id, lhs.isDirectory, preferences: macView)
         }
     }
 
@@ -441,6 +561,7 @@ final class AppModel {
                           _ lhsSize: Int64, _ rhsSize: Int64,
                           _ lhsDate: Date?, _ rhsDate: Date?,
                           _ lhsID: String, _ rhsID: String,
+                          _ isDirectory: Bool,
                           preferences: PanePreferences) -> Bool {
         var order = lhsName.localizedStandardCompare(rhsName)
         switch preferences.sortField {
@@ -450,6 +571,10 @@ final class AppModel {
         case .modified:
             let lhs = lhsDate ?? .distantPast, rhs = rhsDate ?? .distantPast
             if lhs != rhs { order = lhs < rhs ? .orderedAscending : .orderedDescending }
+        case .kind:
+            let kindOrder = browserFileKind(name: lhsName, isDirectory: isDirectory)
+                .localizedStandardCompare(browserFileKind(name: rhsName, isDirectory: isDirectory))
+            if kindOrder != .orderedSame { order = kindOrder }
         }
         if order == .orderedSame { order = lhsID.compare(rhsID) }
         return order == (preferences.sortAscending ? .orderedAscending : .orderedDescending)

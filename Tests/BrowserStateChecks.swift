@@ -47,6 +47,56 @@ struct BrowserStateChecks {
                   "Pane preferences did not remain independent or survive encoding")
         passed += 1
 
+        // Regression: adding column widths must not discard preferences saved
+        // by earlier versions of Porter.
+        let legacy = Data(#"{"viewMode":2,"sortField":"modified","sortAscending":false,"showHiddenFiles":true,"showThumbnails":false}"#.utf8)
+        let migrated = try JSONDecoder().decode(PanePreferences.self, from: legacy)
+        try check(migrated == android, "Existing pane preferences were lost when adding columns")
+        android.columnWidths = ["name": 320, "size": 105]
+        android.sortField = .kind
+        let columns = try JSONDecoder().decode(PanePreferences.self, from: JSONEncoder().encode(android))
+        try check(columns == android && mac.columnWidths.isEmpty,
+                  "Column widths or Kind sorting did not persist independently")
+        passed += 1
+
+        var history = BrowserHistory<String>()
+        history.visit("/Downloads")
+        history.update(selection: ["photo.jpg"], scrollAnchor: "photo.jpg")
+        history.visit("/Downloads/Photos")
+        history.update(selection: ["trip.jpg"], scrollAnchor: "trip.jpg")
+        let beforeRequest = history.current
+        let requested = history.backDestination
+        try check(requested?.path == "/Downloads" && history.current == beforeRequest,
+                  "Preparing a folder request consumed history before success")
+        let previous = history.goBack()
+        try check(previous?.selection == ["photo.jpg"] && previous?.scrollAnchor == "photo.jpg",
+                  "Back did not restore the previous selection and scroll anchor")
+        history.visit("/Downloads")
+        try check(history.forwardDestination?.path == "/Downloads/Photos",
+                  "Refreshing the current location discarded Forward history")
+        let next = history.goForward()
+        try check(next?.selection == ["trip.jpg"] && next?.scrollAnchor == "trip.jpg",
+                  "Forward did not restore the saved folder state")
+        passed += 1
+
+        _ = history.goBack()
+        history.visit("/Pictures")
+        try check(history.forwardDestination == nil && history.backDestination?.path == "/Downloads",
+                  "A new navigation did not replace the abandoned Forward branch")
+        var otherPane = BrowserHistory<String>()
+        otherPane.visit("/DCIM")
+        otherPane.visit("/DCIM/Camera")
+        history.reset()
+        try check(history.current == nil && history.backDestination == nil && history.forwardDestination == nil
+                  && otherPane.backDestination?.path == "/DCIM",
+                  "Changing a device or volume leaked history or changed the other pane")
+        passed += 1
+
+        for index in 0..<110 { history.visit("/folder\(index)") }
+        try check(history.previous.count == 100 && history.previous.first?.path == "/folder9",
+                  "Folder history exceeded its bounded retention")
+        passed += 1
+
         let cache = PreviewThumbnailStore()
         let began = Gate(), release = Gate(), secondBegan = Gate()
         var downloads = 0

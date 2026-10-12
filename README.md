@@ -13,9 +13,9 @@ it with resumable, checksum-verified ADB transfers and direct MTP support.
 
 ## Status
 
-Version 1.0.0 is being prepared as a GitHub release. The universal release build
+Version 1.1.0 is being prepared as a GitHub release. The universal release build
 bundles ADB; public distribution signing and notarization are pending. See the
-[v1.0.0 release notes](Docs/releases/v1.0.0.md) for installation and known limits.
+[v1.1.0 release notes](Docs/releases/v1.1.0.md) for installation and known limits.
 
 Early functionality has been tested with a Galaxy S22 on Android 16. It can
 browse and copy over USB debugging (ADB) or normal File Transfer mode (MTP).
@@ -45,6 +45,20 @@ device tests; its real-device throughput still needs measuring.
 The Mac and Android panes have separate saved view modes, sort orders,
 hidden-file rules, and icon-preview toggles. Use the controls in each pane's
 header to switch between list and icon view independently.
+
+Click a pane to make it active; its header has an accent underline. File and
+navigation commands target that pane. Return renames the selection, Command-Down
+opens it, Command-Up opens the parent folder, and Shift-Command-N creates a folder
+on either the Mac or the phone. Space or Command-Y opens Quick Look. Command-1
+and Command-2 switch the active pane to icons and list, and Shift-Command-P
+toggles its preview sidebar.
+
+Each pane has independent Back and Forward buttons and Command-[ / Command-]
+history. Returning to a folder restores its selection and scroll position;
+refresh preserves selections of files still present. Phone history resets when
+switching devices or storage volumes and commits only after a folder loads.
+List view uses native, resizable Name, Date Modified, Size, and Kind columns.
+Click a header to sort; each pane saves its own widths and sorting preferences.
 
 Each pane has an optional preview sidebar showing the selected file's thumbnail
 and metadata, with Quick Look and a summary for multiple selections. Its width
@@ -184,7 +198,12 @@ Browser state checks run without launching the app or contacting a phone:
 
 ```bash
 bash Scripts/test-browser-state.sh
+bash Scripts/test-app-browser.sh
 ```
+
+The app browser checks use temporary fixture folders under `build/` to exercise
+navigation and refresh in the real app model without launching Porter or
+contacting a phone.
 
 macOS 14+, Xcode 26. The app target needs a signing team; set `DEVELOPMENT_TEAM`
 in `project.yml`.
@@ -194,6 +213,10 @@ library target. `Kit/` also remains a Swift package for tests and the diagnostic
 CLI. Building the app does not require Swift package resolution.
 
 ### Release packaging
+
+Commit the release changes before packaging. The script requires a clean
+checkout and `Docs/releases/v<version>.md` matching `project.yml`, so the
+source archive and metadata identify the exact code compiled into the app.
 
 ```bash
 bash Scripts/fetch-platform-tools.sh

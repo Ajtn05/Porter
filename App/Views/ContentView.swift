@@ -23,6 +23,7 @@ struct ContentView: View {
             }
             .toolbar { BrowserToolbar() }
         }
+        .focusedSceneValue(\.porterBrowser, true)
         .sheet(item: $model.pendingConflict) { conflict in
             ConflictSheet(conflict: conflict)
         }

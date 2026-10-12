@@ -48,8 +48,13 @@ struct MacPane: View {
             PaneHeader(
                 title: "This Mac",
                 icon: "laptopcomputer",
+                isActive: model.activePane == .mac,
+                canGoBack: model.localHistory.backDestination != nil,
+                canGoForward: model.localHistory.forwardDestination != nil,
+                onGoBack: { model.goBack(in: .mac) },
+                onGoForward: { model.goForward(in: .mac) },
                 canGoUp: model.localDirectory.path != "/",
-                onGoUp: { model.localGoUp() },
+                onGoUp: { model.activePane = .mac; model.localGoUp() },
                 trailing: {
                     AnyView(
                         HStack(spacing: 6) {
@@ -72,7 +77,13 @@ struct MacPane: View {
                 FileTable(
                     rows: model.localEntries.map(FileRow.init),
                     selection: Binding(get: { model.localSelection }, set: { model.localSelection = $0 }),
-                    viewMode: model.macView.viewMode,
+                    preferences: $model.macView,
+                    pane: .mac,
+                    isActive: model.activePane == .mac,
+                    onActivate: { model.activePane = .mac },
+                    scrollAnchor: model.localScrollAnchor,
+                    scrollRevision: model.localScrollRevision,
+                    onScroll: { model.localScrollAnchor = $0 },
                     onOpen: { id in
                         guard let file = model.localEntries.first(where: { $0.id == id }) else { return }
                         if file.isDirectory { model.open(localDirectory: file.url) }
@@ -95,6 +106,14 @@ struct MacPane: View {
                         model.copyToMac(files, from: device, into: folder.url)
                         return true
                     },
+                    remoteDrop: { payloads in
+                        guard let drag = payloads.first,
+                              let device = model.devices.first(where: { $0.id.rawValue == drag.deviceID }) else { return false }
+                        let files = model.deviceEntries.filter { drag.paths.contains($0.path.string) }
+                        guard !files.isEmpty else { return false }
+                        model.copyToMac(files, from: device, into: model.localDirectory)
+                        return true
+                    },
                     thumbnailProvider: model.macView.showThumbnails ? { row in try await model.thumbnail(for: row) } : nil,
                     thumbnailRevision: "\(model.macView.showThumbnails)"
                 )
@@ -114,7 +133,10 @@ struct MacPane: View {
             }
         }
         .background(.background)
-        .onReceive(NotificationCenter.default.publisher(for: .newFolderRequested)) { _ in
+        .simultaneousGesture(TapGesture().onEnded { model.activePane = .mac })
+        .onReceive(NotificationCenter.default.publisher(for: .browserCommandRequested)) { notification in
+            guard let request = notification.object as? BrowserCommandRequest,
+                  request.pane == .mac, request.command == .newFolder else { return }
             isCreatingFolder = true
         }
         .sheet(item: $renaming) { file in
@@ -135,6 +157,7 @@ struct DevicePane: View {
     @State private var isTargeted = false
     @State private var renaming: RemoteFile?
     @State private var isConfirmingDelete = false
+    @State private var isCreatingFolder = false
 
     var body: some View {
         @Bindable var model = model
@@ -142,8 +165,13 @@ struct DevicePane: View {
             PaneHeader(
                 title: model.selectedDevice?.displayName ?? "Device",
                 icon: "iphone",
-                canGoUp: model.devicePath != model.selectedVolume?.rootPath,
-                onGoUp: { model.deviceGoUp() },
+                isActive: model.activePane == .android,
+                canGoBack: !model.isLoadingDevice && model.deviceHistory.backDestination != nil,
+                canGoForward: !model.isLoadingDevice && model.deviceHistory.forwardDestination != nil,
+                onGoBack: { model.goBack(in: .android) },
+                onGoForward: { model.goForward(in: .android) },
+                canGoUp: !model.isLoadingDevice && model.devicePath != model.selectedVolume?.rootPath,
+                onGoUp: { model.activePane = .android; model.deviceGoUp() },
                 trailing: {
                     AnyView(
                         HStack(spacing: 6) {
@@ -179,7 +207,13 @@ struct DevicePane: View {
                 FileTable(
                     rows: model.deviceEntries.map(FileRow.init),
                     selection: Binding(get: { model.deviceSelection }, set: { model.deviceSelection = $0 }),
-                    viewMode: model.androidView.viewMode,
+                    preferences: $model.androidView,
+                    pane: .android,
+                    isActive: model.activePane == .android,
+                    onActivate: { model.activePane = .android },
+                    scrollAnchor: model.deviceScrollAnchor,
+                    scrollRevision: model.deviceScrollRevision,
+                    onScroll: { model.deviceScrollAnchor = $0 },
                     onOpen: { id in
                         guard let file = model.deviceEntries.first(where: { $0.id == id }), file.isDirectory else { return }
                         Task { await model.open(devicePath: file.path) }
@@ -196,6 +230,10 @@ struct DevicePane: View {
                         guard let folder = model.deviceEntries.first(where: { $0.id == folderID }),
                               folder.isDirectory else { return false }
                         model.copyToDevice(urls, into: folder.path)
+                        return true
+                    },
+                    localDrop: { urls in
+                        model.copyToDevice(urls, into: model.devicePath)
                         return true
                     },
                     previewProvider: { id in
@@ -219,8 +257,19 @@ struct DevicePane: View {
             }
         }
         .background(.background)
+        .simultaneousGesture(TapGesture().onEnded { model.activePane = .android })
+        .onReceive(NotificationCenter.default.publisher(for: .browserCommandRequested)) { notification in
+            guard let request = notification.object as? BrowserCommandRequest,
+                  request.pane == .android, request.command == .newFolder else { return }
+            isCreatingFolder = true
+        }
         .sheet(item: $renaming) { file in
             RenameSheet(currentName: file.name) { model.renameOnDevice(file, to: $0) }
+        }
+        .sheet(isPresented: $isCreatingFolder) {
+            RenameSheet(title: "New Folder", currentName: "untitled folder", confirmTitle: "Create") {
+                model.createFolderOnDevice(named: $0)
+            }
         }
         .confirmationDialog(
             "Delete \(model.deviceSelectionDescription)?",
@@ -241,12 +290,27 @@ struct DevicePane: View {
 struct PaneHeader: View {
     let title: String
     let icon: String
+    let isActive: Bool
+    let canGoBack: Bool
+    let canGoForward: Bool
+    let onGoBack: () -> Void
+    let onGoForward: () -> Void
     let canGoUp: Bool
     let onGoUp: () -> Void
     let trailing: () -> AnyView
 
     var body: some View {
         HStack(spacing: 8) {
+            Button(action: onGoBack) { Image(systemName: "chevron.left") }
+                .buttonStyle(.borderless)
+                .disabled(!canGoBack)
+                .help("Back")
+                .accessibilityLabel("Back")
+            Button(action: onGoForward) { Image(systemName: "chevron.right") }
+                .buttonStyle(.borderless)
+                .disabled(!canGoForward)
+                .help("Forward")
+                .accessibilityLabel("Forward")
             Button(action: onGoUp) {
                 Image(systemName: "chevron.up")
             }
@@ -257,6 +321,7 @@ struct PaneHeader: View {
             Label(title, systemImage: icon)
                 .font(.headline)
                 .lineLimit(1)
+                .foregroundStyle(isActive ? Color.primary : .secondary)
 
             Spacer()
             trailing()
@@ -264,6 +329,9 @@ struct PaneHeader: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.bar)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(isActive ? Color.accentColor.opacity(0.5) : .clear).frame(height: 2)
+        }
     }
 }
 

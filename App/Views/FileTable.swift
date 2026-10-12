@@ -59,12 +59,20 @@ struct FileRow: Identifiable, Hashable {
         default: return "doc"
         }
     }
+
+    var kind: String { browserFileKind(name: name, isDirectory: isDirectory) }
 }
 
 struct FileTable: View {
     let rows: [FileRow]
     @Binding var selection: Set<String>
-    let viewMode: ViewMode
+    @Binding var preferences: PanePreferences
+    let pane: BrowserPane
+    let isActive: Bool
+    let onActivate: () -> Void
+    let scrollAnchor: String?
+    let scrollRevision: UUID
+    let onScroll: (String?) -> Void
     let onOpen: (String) -> Void
     let onRename: (String) -> Void
     let onDelete: () -> Void
@@ -80,6 +88,8 @@ struct FileTable: View {
     /// Lets a Mac drag land on a folder in the device pane rather than only
     /// in the directory currently being shown.
     var localFolderDrop: (([URL], String) -> Bool)?
+    var remoteDrop: (([RemoteFileDrag]) -> Bool)?
+    var localDrop: (([URL]) -> Bool)?
     /// Fetches a device file to a temporary URL for Quick Look on demand.
     var previewProvider: ((String) async throws -> URL)?
 
@@ -92,10 +102,11 @@ struct FileTable: View {
     @State private var previewRequestID = UUID()
     @State private var isPreparingPreview = false
     @State private var previewError: String?
+    @FocusState private var gridIsFocused: Bool
 
     var body: some View {
         Group {
-            switch viewMode {
+            switch preferences.viewMode {
             case .list: listView
             case .grid: gridView
             }
@@ -126,51 +137,26 @@ struct FileTable: View {
         } message: {
             Text(previewError ?? "")
         }
-        .background {
-            // Hidden buttons that host the shortcuts, so Finder's keys work
-            // without an open menu.
-            VStack {
-                Button("Delete") { onDelete() }
-                    .keyboardShortcut(.delete, modifiers: .command)
-                Button("Copy Across") { onCopyAcross() }
-                    .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
-            }
-            .opacity(0)
-            .accessibilityHidden(true)
+        .onReceive(NotificationCenter.default.publisher(for: .browserCommandRequested)) { notification in
+            guard let request = notification.object as? BrowserCommandRequest,
+                  request.pane == pane else { return }
+            perform(request.command)
         }
     }
 
     private var listView: some View {
-        List(selection: $selection) {
-            ForEach(rows) { row in
-                FileRowView(row: row, style: .list)
-                    .tag(row.id)
-                    .contentShape(.rect)
-                    .onTapGesture(count: 2) { open(row.id) }
-                    .contextMenu { menu(for: row) }
-                    .modifier(RowDragModifier(row: row, selection: selection,
-                                              dragProvider: dragProvider,
-                                              remoteDragProvider: remoteDragProvider))
-                    .modifier(FolderDropModifier(
-                        row: row,
-                        remoteFolderDrop: remoteFolderDrop,
-                        localFolderDrop: localFolderDrop
-                    ))
-            }
-        }
-        .listStyle(.inset(alternatesRowBackgrounds: true))
-        .onKeyPress(.space) {
-            preview()
-            return .handled
-        }
-        .onKeyPress(.return) {
-            if let single = selection.first, selection.count == 1 { open(single) }
-            return .handled
-        }
+        NativeFileTable(rows: rows, selection: $selection, preferences: $preferences,
+                        pane: pane, scrollAnchor: scrollAnchor, scrollRevision: scrollRevision,
+                        onScroll: onScroll, onActivate: onActivate, onCommand: perform,
+                        onOpen: open, copyAcrossTitle: copyAcrossTitle,
+                        dragProvider: dragProvider, remoteDragProvider: remoteDragProvider,
+                        remoteFolderDrop: remoteFolderDrop, localFolderDrop: localFolderDrop,
+                        remoteDrop: remoteDrop, localDrop: localDrop)
     }
 
     private var gridView: some View {
-        GeometryReader { geometry in
+        ScrollViewReader { proxy in
+          GeometryReader { geometry in
             ScrollView {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 12)], alignment: .leading, spacing: 12) {
                     ForEach(rows) { row in
@@ -179,16 +165,26 @@ struct FileTable: View {
                             .padding(6)
                             .background {
                                 RoundedRectangle(cornerRadius: 8)
-                                    .fill(selection.contains(row.id) ? Color.accentColor.opacity(0.22) : .clear)
+                                    .fill(selection.contains(row.id)
+                                        ? (isActive ? Color.accentColor : .secondary).opacity(0.22) : .clear)
                             }
                             .contentShape(.rect)
                             .onTapGesture {
+                                onActivate()
+                                gridIsFocused = true
                                 if NSEvent.modifierFlags.contains(.command) {
                                     if selection.contains(row.id) { selection.remove(row.id) }
                                     else { selection.insert(row.id) }
                                 } else { selection = [row.id] }
                             }
                             .onTapGesture(count: 2) { open(row.id) }
+                            .id(row.id)
+                            .background {
+                                GeometryReader { cell in
+                                    Color.clear.preference(key: BrowserScrollAnchors.self,
+                                        value: [row.id: cell.frame(in: .named(pane.rawValue))])
+                                }
+                            }
                             .contextMenu { menu(for: row) }
                             .modifier(RowDragModifier(row: row, selection: selection,
                                                       dragProvider: dragProvider,
@@ -205,17 +201,46 @@ struct FileTable: View {
                 .frame(width: max(0, geometry.size.width - 24), alignment: .topLeading)
                 .padding(12)
             }
+            .coordinateSpace(name: pane.rawValue)
+            .onPreferenceChange(BrowserScrollAnchors.self) { positions in
+                let firstVisible = positions.filter { $0.value.maxY > 0 }
+                    .min { $0.value.minY < $1.value.minY }?.key
+                if firstVisible != scrollAnchor { onScroll(firstVisible) }
+            }
+            .onAppear { restoreGridScroll(proxy) }
+            .onChange(of: scrollRevision) { _, _ in restoreGridScroll(proxy) }
             .frame(width: geometry.size.width, height: geometry.size.height)
+          }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .focusable()
+        .focused($gridIsFocused)
+        .onChange(of: gridIsFocused) { _, focused in if focused { onActivate() } }
         .onKeyPress(.space) {
             preview()
             return .handled
         }
         .onKeyPress(.return) {
-            if selection.count == 1, let id = selection.first { open(id) }
+            perform(.rename)
             return .handled
+        }
+    }
+
+    private func restoreGridScroll(_ proxy: ScrollViewProxy) {
+        if let id = scrollAnchor ?? rows.first?.id { proxy.scrollTo(id, anchor: .top) }
+    }
+
+    private func perform(_ command: BrowserCommand) {
+        switch command {
+        case .open:
+            if selection.count == 1, let id = selection.first { open(id) }
+        case .rename:
+            if selection.count == 1, let id = selection.first { onRename(id) }
+        case .quickLook: preview()
+        case .delete: if !selection.isEmpty { onDelete() }
+        case .copyAcross: if !selection.isEmpty { onCopyAcross() }
+        case .selectAll: selection = Set(rows.map(\.id))
+        case .newFolder: break
         }
     }
 
@@ -305,6 +330,13 @@ struct FileTable: View {
         guard let url = temporaryPreviewURL else { return }
         try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
         temporaryPreviewURL = nil
+    }
+}
+
+private struct BrowserScrollAnchors: PreferenceKey {
+    static let defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
     }
 }
 

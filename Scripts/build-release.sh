@@ -8,6 +8,26 @@ mkdir -p build
 rm -rf build/Porter.app build/DerivedData DerivedData build/release
 rm -f build/build-info.json
 trap 'rm -rf build/Porter.app build/release; rm -f build/build-info.json' ERR
+: > build/build.log
+source_revision=$(git -c core.fsmonitor=false rev-parse HEAD)
+[[ -z "$(git -c core.fsmonitor=false status --porcelain)" ]] || {
+    echo 'Commit release changes before packaging so the source archive matches the app.' | tee build/build.log >&2
+    exit 1
+}
+configured_version=$(python3 - <<'PY'
+from pathlib import Path
+import re
+match = re.search(r'^\s*MARKETING_VERSION:\s*"(\d+\.\d+\.\d+)"\s*$', Path('project.yml').read_text(), re.MULTILINE)
+if not match:
+    raise SystemExit('project.yml must declare a three-part MARKETING_VERSION.')
+print(match.group(1))
+PY
+)
+release_notes="Docs/releases/v$configured_version.md"
+[[ -s "$release_notes" ]] || {
+    echo "Missing release notes: $release_notes" | tee build/build.log >&2
+    exit 1
+}
 [[ -x App/Resources/platform-tools/adb ]] || {
     echo 'Run bash Scripts/fetch-platform-tools.sh before packaging a release.' >&2
     exit 1
@@ -51,8 +71,16 @@ codesign --verify --deep --strict --verbose=2 "$app"
 plutil -lint "$app/Contents/Info.plist" "$extension/Contents/Info.plist"
 rm -rf build/DerivedData
 
+# A release must identify the same revision in its binaries, source archive,
+# and metadata, even if the checkout changes while Xcode is running.
+[[ "$source_revision" == "$(git -c core.fsmonitor=false rev-parse HEAD)" &&
+   -z "$(git -c core.fsmonitor=false status --porcelain)" ]] || {
+    echo 'The checkout changed during the build. Commit it and rebuild the release.' >&2
+    false
+}
+
 mkdir -p build/release
-python3 - "$identity" <<'PY'
+python3 - "$identity" "$source_revision" "$configured_version" <<'PY'
 from datetime import datetime, timezone
 from pathlib import Path
 import hashlib, json, plistlib, subprocess, sys
@@ -61,6 +89,7 @@ info = plistlib.loads((app/'Contents/Info.plist').read_bytes())
 extension_info = plistlib.loads((app/'Contents/PlugIns/PorterFileProvider.appex/Contents/Info.plist').read_bytes())
 assert info['CFBundleShortVersionString'] == extension_info['CFBundleShortVersionString']
 assert info['CFBundleVersion'] == extension_info['CFBundleVersion']
+assert info['CFBundleShortVersionString'] == sys.argv[3]
 assert extension_info['NSExtension']['NSExtensionPointIdentifier'] == 'com.apple.fileprovider-nonui'
 record = {
     'built_at_utc': datetime.now(timezone.utc).isoformat(),
@@ -70,8 +99,8 @@ record = {
     'bundle_identifier': info['CFBundleIdentifier'],
     'version': info['CFBundleShortVersionString'],
     'build_number': info['CFBundleVersion'],
-    'source_commit': subprocess.check_output(['git', '-c', 'core.fsmonitor=false', 'rev-parse', 'HEAD'], text=True).strip(),
-    'source_dirty': bool(subprocess.check_output(['git', '-c', 'core.fsmonitor=false', 'status', '--porcelain'], text=True).strip()),
+    'source_commit': sys.argv[2],
+    'source_dirty': False,
     'signature': 'ad hoc' if sys.argv[1] == '-' else sys.argv[1],
     'notarized': False,
     'finder_extension_embedded': True,
@@ -92,8 +121,8 @@ PY
 
 version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")
 ditto -c -k --sequesterRsrc --keepParent "$app" "build/release/Porter-$version-macos-universal.zip"
-git -c core.fsmonitor=false archive --format=tar.gz -o "build/release/Porter-$version-source.tar.gz" HEAD
-cp Docs/releases/v1.0.0.md build/release/RELEASE-NOTES.md
+git -c core.fsmonitor=false archive --format=tar.gz -o "build/release/Porter-$version-source.tar.gz" "$source_revision"
+cp "$release_notes" build/release/RELEASE-NOTES.md
 cp LICENSE build/release/LICENSE
 (
     cd build/release

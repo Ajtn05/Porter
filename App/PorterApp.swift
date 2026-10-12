@@ -48,13 +48,74 @@ struct PorterApp: App {
 /// Menu commands, keyed to match Finder's shortcuts.
 struct PorterCommands: Commands {
     let model: AppModel
+    @FocusedValue(\.porterBrowser) private var browserIsVisible
+
+    private var canUseActivePane: Bool { browserIsVisible == true && model.canUseActivePane }
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
-            Button("New Folder") { NotificationCenter.default.post(name: .newFolderRequested, object: nil) }
+            Button("New Folder") { model.requestBrowserCommand(.newFolder) }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
+                .disabled(!canUseActivePane)
+        }
+        CommandGroup(after: .newItem) {
+            Button("Open") { model.requestBrowserCommand(.open) }
+                .keyboardShortcut(.downArrow, modifiers: .command)
+                .disabled(!canUseActivePane || model.activeSelectionCount != 1)
+            Button("Rename…") { model.requestBrowserCommand(.rename) }
+                .disabled(!canUseActivePane || model.activeSelectionCount != 1)
+            Button("Quick Look") { model.requestBrowserCommand(.quickLook) }
+                .keyboardShortcut("y", modifiers: .command)
+                .disabled(!canUseActivePane || model.activeSelectionCount != 1)
+        }
+        CommandGroup(after: .pasteboard) {
+            Button("Select All") {
+                if NSApp.keyWindow?.firstResponder is NSTextView {
+                    NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: nil)
+                } else { model.requestBrowserCommand(.selectAll) }
+            }
+                .keyboardShortcut("a", modifiers: .command)
+                .disabled(!canUseActivePane && !(NSApp.keyWindow?.firstResponder is NSTextView))
+            Button(model.activePane == .mac ? "Move to Trash" : "Delete from Phone…") {
+                model.requestBrowserCommand(.delete)
+            }
+            .keyboardShortcut(.delete, modifiers: .command)
+            .disabled(!canUseActivePane || model.activeSelectionCount == 0)
+        }
+        CommandMenu("Go") {
+            Button("Back") { model.goBack(in: model.activePane) }
+                .keyboardShortcut("[", modifiers: .command)
+                .disabled(!canUseActivePane || (model.activePane == .mac
+                    ? model.localHistory.backDestination == nil : model.deviceHistory.backDestination == nil))
+            Button("Forward") { model.goForward(in: model.activePane) }
+                .keyboardShortcut("]", modifiers: .command)
+                .disabled(!canUseActivePane || (model.activePane == .mac
+                    ? model.localHistory.forwardDestination == nil : model.deviceHistory.forwardDestination == nil))
+            Button("Enclosing Folder") { model.goUpInActivePane() }
+                .keyboardShortcut(.upArrow, modifiers: .command)
+                .disabled(!canUseActivePane || (model.activePane == .mac
+                    ? model.localDirectory.path == "/" : model.devicePath == model.selectedVolume?.rootPath))
         }
         CommandGroup(after: .toolbar) {
+            Button("as Icons") {
+                if model.activePane == .mac { model.macView.viewMode = .grid }
+                else { model.androidView.viewMode = .grid }
+            }
+            .keyboardShortcut("1", modifiers: .command)
+            .disabled(!canUseActivePane)
+            Button("as List") {
+                if model.activePane == .mac { model.macView.viewMode = .list }
+                else { model.androidView.viewMode = .list }
+            }
+            .keyboardShortcut("2", modifiers: .command)
+            .disabled(!canUseActivePane)
+            Button("Show/Hide Preview") {
+                if model.activePane == .mac { model.showMacPreview.toggle() }
+                else { model.showAndroidPreview.toggle() }
+            }
+            .keyboardShortcut("p", modifiers: [.command, .shift])
+            .disabled(!canUseActivePane)
+            Divider()
             Menu("This Mac") {
                 PaneViewMenu(preferences: Binding(get: { model.macView }, set: { model.macView = $0 }))
                 Toggle("Show Preview", isOn: Binding(get: { model.showMacPreview }, set: { model.showMacPreview = $0 }))
@@ -69,6 +130,12 @@ struct PorterCommands: Commands {
                 .keyboardShortcut("r", modifiers: .command)
         }
         CommandMenu("Transfer") {
+            Button(model.activePane == .mac ? "Copy to Device" : "Copy to Mac") {
+                model.requestBrowserCommand(.copyAcross)
+            }
+            .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+            .disabled(!canUseActivePane || model.activeSelectionCount == 0)
+            Divider()
             Button(model.summary.isPaused ? "Resume All" : "Pause All") {
                 model.summary.isPaused ? model.resumeAll() : model.pauseAll()
             }
@@ -78,10 +145,6 @@ struct PorterCommands: Commands {
                 .disabled(model.transferItems.isEmpty)
         }
     }
-}
-
-extension Notification.Name {
-    static let newFolderRequested = Notification.Name("app.porter.newFolder")
 }
 
 struct MenuBarLabel: View {

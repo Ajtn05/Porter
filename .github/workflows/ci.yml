@@ -60,6 +60,9 @@ jobs:
       - name: Browser state checks
         run: bash Scripts/test-browser-state.sh
 
+      - name: App browser checks
+        run: bash Scripts/test-app-browser.sh
+
       - name: Fetch bundled ADB
         run: bash Scripts/fetch-platform-tools.sh
 
