@@ -71,6 +71,8 @@ final class AppModel {
         didSet { localHistory.update(selection: localSelection, scrollAnchor: localScrollAnchor) }
     }
     private(set) var localScrollRevision = UUID()
+    private(set) var localError: String?
+    private var localBrowseRetry: (URL, NavigationMode)?
     var activePane: BrowserPane = .mac
 
     var activeSelectionCount: Int {
@@ -91,8 +93,8 @@ final class AppModel {
     func goBack(in pane: BrowserPane) {
         activePane = pane
         if pane == .mac {
-            guard let destination = localHistory.goBack() else { return }
-            restoreLocalLocation(destination)
+            guard let destination = localHistory.backDestination else { return }
+            restoreLocalLocation(destination, mode: .back)
         } else if !isLoadingDevice, let destination = deviceHistory.backDestination {
             let generation = deviceBrowseGeneration
             Task {
@@ -105,8 +107,8 @@ final class AppModel {
     func goForward(in pane: BrowserPane) {
         activePane = pane
         if pane == .mac {
-            guard let destination = localHistory.goForward() else { return }
-            restoreLocalLocation(destination)
+            guard let destination = localHistory.forwardDestination else { return }
+            restoreLocalLocation(destination, mode: .forward)
         } else if !isLoadingDevice, let destination = deviceHistory.forwardDestination {
             let generation = deviceBrowseGeneration
             Task {
@@ -165,10 +167,13 @@ final class AppModel {
 
     // Sheets
     var pendingConflict: PendingConflict?
+    var waitingConflicts: [PendingConflict] = []
+    var isConflictPresented = false
     var planWarnings: [PlanWarning] = []
     var showWarnings = false
     var finderDomainMessage: String?
     var localTrashReport: LocalTrashReport?
+    var photoImportSession: PhotoImportSession?
     private(set) var mtpConflicts: [MTPConflict] = []
     private(set) var mtpQuitError: String?
     private var promptedMTPLocations: Set<Int> = []
@@ -508,28 +513,64 @@ final class AppModel {
     // MARK: - Local browsing
 
     func refreshLocalPane() {
-        localHistory.visit(localDirectory)
-        localEntries = sorted(LocalFile.contents(of: localDirectory, includeHidden: macView.showHiddenFiles))
-        localSelection.formIntersection(Set(localEntries.map(\.id)))
+        do {
+            let entries = try LocalFile.contents(of: localDirectory, includeHidden: macView.showHiddenFiles)
+            localHistory.visit(localDirectory)
+            localEntries = sorted(entries)
+            localSelection.formIntersection(Set(localEntries.map(\.id)))
+            localError = nil
+            localBrowseRetry = nil
+        } catch {
+            localError = "Couldn’t read \(localDirectory.path). \(error.localizedDescription)"
+            localBrowseRetry = (localDirectory, .refresh)
+        }
     }
 
     func open(localDirectory url: URL) {
         guard url != localDirectory else { return }
-        localHistory.visit(localDirectory)
-        localHistory.visit(url)
-        localDirectory = url
-        localSelection = []
-        localScrollAnchor = nil
-        refreshLocalPane()
-        localScrollRevision = UUID()
+        do {
+            let entries = try LocalFile.contents(of: url, includeHidden: macView.showHiddenFiles)
+            localHistory.visit(localDirectory)
+            localHistory.visit(url)
+            localDirectory = url
+            localEntries = sorted(entries)
+            localSelection = []
+            localScrollAnchor = nil
+            localScrollRevision = UUID()
+            localError = nil
+            localBrowseRetry = nil
+        } catch {
+            localError = "Couldn’t open \(url.path). \(error.localizedDescription)"
+            localBrowseRetry = (url, .visit)
+        }
     }
 
-    private func restoreLocalLocation(_ location: BrowserLocation<URL>) {
-        localDirectory = location.path
-        localEntries = sorted(LocalFile.contents(of: localDirectory, includeHidden: macView.showHiddenFiles))
-        localSelection = location.selection.intersection(Set(localEntries.map(\.id)))
-        localScrollAnchor = location.scrollAnchor
-        localScrollRevision = UUID()
+    private func restoreLocalLocation(_ location: BrowserLocation<URL>, mode: NavigationMode) {
+        do {
+            let entries = try LocalFile.contents(of: location.path, includeHidden: macView.showHiddenFiles)
+            if mode == .back { localHistory.goBack() }
+            else { localHistory.goForward() }
+            localDirectory = location.path
+            localEntries = sorted(entries)
+            localSelection = location.selection.intersection(Set(localEntries.map(\.id)))
+            localScrollAnchor = location.scrollAnchor
+            localScrollRevision = UUID()
+            localError = nil
+            localBrowseRetry = nil
+        } catch {
+            localError = "Couldn’t open \(location.path.path). \(error.localizedDescription)"
+            localBrowseRetry = (location.path, mode)
+        }
+    }
+
+    func retryLocalNavigation() {
+        guard let (path, mode) = localBrowseRetry else { return }
+        switch mode {
+        case .visit: open(localDirectory: path)
+        case .back: goBack(in: .mac)
+        case .forward: goForward(in: .mac)
+        case .refresh: refreshLocalPane()
+        }
     }
 
     func localGoUp() {

@@ -89,6 +89,9 @@ public actor ADBTransport: DeviceTransport {
         if stderr.contains("permission denied") {
             return .permissionDenied(RemotePath(extractPath(from: result.stderrText) ?? "/"))
         }
+        if stderr.contains("no such file or directory") {
+            return .notFound(RemotePath(extractPath(from: result.stderrText) ?? "/"))
+        }
         return .commandFailed(command: command, exitCode: result.exitCode, stderr: result.stderrText)
     }
 
@@ -268,8 +271,18 @@ public actor ADBTransport: DeviceTransport {
     }
 
     public func stat(_ path: RemotePath) async throws -> RemoteFile? {
-        let output = try? await shell("stat -c '%f|%s|%Y|%n' \(path.shellQuoted) 2>/dev/null", timeout: .seconds(15))
-        guard let output, let file = ADBParsing.parseStatRecords(output).first else { return nil }
+        let command = "stat -c '%f|%s|%Y|%n' \(path.shellQuoted)"
+        let result = try await adb(["shell", command], timeout: .seconds(15))
+        guard result.succeeded else {
+            let error = mapFailure(command: command, result: result)
+            if case .notFound = error { return nil }
+            if case .permissionDenied = error { throw TransferError.permissionDenied(path) }
+            throw error
+        }
+        try throwIfKnownShellFailure(result.stderrText, command: command)
+        guard let file = ADBParsing.parseStatRecords(result.stdoutText).first else {
+            throw TransferError.protocolError("Couldn’t read metadata for \(path.string).")
+        }
         return file
     }
 

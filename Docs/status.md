@@ -9,12 +9,38 @@ Current implementation snapshot: 14 October 2026.
 | Finder File Provider | Read-only source prototype | The extension enumerates storage and asks the host app to materialize files through an App-Group bridge. Signed Finder registration and downloads need on-device validation. |
 | Mac file operations | Implemented | New Folder and Rename retain editable names on failure. Trash reports all failures and preserves the remaining selection. Workspace checks cover collisions, invalid names, missing sources, and partial failures. Dialog presentation still needs desktop validation. |
 | Browser views and previews | Implemented | Commands target the active pane, with Finder keyboard bindings, clipboard transfers between panes, independent Back/Forward histories, and selection/scroll restoration. Finder file URLs can be pasted into the Android pane. Native list columns resize and sort, with saved widths per pane. The Android sidebar and icons prefer native MTP thumbnails and defer previews during directory loading. Desktop clipboard behavior, layout, dragging, and thumbnail rendering still need runtime validation. |
-| Phase 3 | Partial | Quick Look materializes a selected remote file. Photo import, watched folders, and APK sideloading remain future work. |
+| Phase 3 | Partial | Quick Look materializes a selected remote file. Photo and video import scans the selected storage, reviews selected files, preserves subfolders, and uses the transfer queue. Watched folders and APK sideloading remain future work. Photo import still needs desktop and real-phone validation. |
 
 The Android companion and paired Wi-Fi transfer path have been removed. Porter
 connects to phones over USB through ADB or MTP.
 
 ## Build verification
+
+The v1.2.0 preparation on 14 October 2026 passed all 211 package tests in 24
+suites, 15 browser state checks, and 36 app checks. The new coverage exercises
+destination collisions, isolated partials, late conflict choices, replacement
+and rollback failures, ADB metadata errors, folder recovery, and queued conflict
+prompts. Mac navigation preserves its last successful view on read errors.
+Phone replacement retains a backup through placement and reports its path if
+recovery fails. See [v1.2.0 notes](releases/v1.2.0.md) for upgrade behavior and
+validation limits. The candidate uses ad hoc signing; Developer ID distribution
+and notarization are pending. Desktop UI and real-phone checks were not run.
+
+On 14 October 2026, photo import passed ten package scenarios and seven dialog
+state checks. The full run passed all 194 package tests in 23 suites and all 29
+app checks. Coverage includes metadata-only scanning, media filtering, album
+paths, selected files, fresh sizes, invalidated reviews, cancellation,
+disconnects, filename collisions, and checksum-verified copying. Keep Both now
+applies the source date to the new copy without altering the existing file.
+Local free-space preflight uses the filesystem report because the important-
+usage capacity API reported zero in the workspace sandbox. The app-check script
+also rebuilds the static library product before linking its checks.
+
+A fresh universal Release app, bundled ADB, and embedded Finder extension
+passed architecture, bundle, and ad hoc signature checks. The current app is at
+`build/Porter.app`; build intermediates were removed. No desktop UI tests ran,
+Porter was not launched, and no phone was contacted. Photo import still needs
+desktop and real-device validation.
 
 On 14 October 2026, Mac file operations passed eight new scenario checks
 alongside the six app-model and eight clipboard checks. Coverage includes
@@ -82,4 +108,4 @@ because the protocol has no device-side checksum operation.
    mixed-file throughput on several phones in File Transfer mode.
 2. Validate signed Finder registration and read-only browsing with a real
    phone over both USB transports.
-3. Finish signing and notarisation, bundle `adb`, and measure sustained load.
+3. Finish Developer ID signing and notarisation, and measure sustained load.

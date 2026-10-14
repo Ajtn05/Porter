@@ -13,6 +13,8 @@ public enum TransferError: Error, Hashable, Sendable {
     case notFound(RemotePath)
     case permissionDenied(RemotePath)
     case alreadyExists(RemotePath)
+    case destinationConflict(path: String)
+    case replacementRecoveryNeeded(path: String, backup: String)
     case deviceDisconnected(during: String)
     case deviceStalled(reason: String)
     case insufficientSpace(needed: Int64, available: Int64, volume: String)
@@ -56,6 +58,10 @@ extension TransferError: LocalizedError {
             return "Android would not let this Mac read \(path.string)."
         case .alreadyExists(let path):
             return "\(path.string) already exists."
+        case .destinationConflict(let path):
+            return "\(path) now conflicts with this copy. Plan the copy again to choose how to handle it."
+        case .replacementRecoveryNeeded(let path, let backup):
+            return "Couldn’t finish replacing \(path). The original file is preserved at \(backup)."
         case .deviceDisconnected(let during):
             return "The device disconnected during \(during)."
         case .deviceStalled(let reason):

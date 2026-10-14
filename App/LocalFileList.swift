@@ -16,14 +16,14 @@ struct LocalFile: Identifiable, Hashable, Sendable {
     /// filtered out of the pane so a partial copy never looks like a real file.
     var isPartialTransfer: Bool { name.hasSuffix(TransferItem.partialSuffix) }
 
-    static func contents(of directory: URL, includeHidden: Bool) -> [LocalFile] {
+    static func contents(of directory: URL, includeHidden: Bool) throws -> [LocalFile] {
         let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey]
         var options: FileManager.DirectoryEnumerationOptions = [.skipsSubdirectoryDescendants, .skipsPackageDescendants]
         if !includeHidden { options.insert(.skipsHiddenFiles) }
 
-        let urls = (try? FileManager.default.contentsOfDirectory(
+        let urls = try FileManager.default.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: keys, options: options
-        )) ?? []
+        )
 
         return urls.compactMap { url in
             guard let values = try? url.resourceValues(forKeys: Set(keys)) else { return nil }

@@ -23,10 +23,11 @@ public enum PlanWarning: Hashable, Sendable {
     case fileTooLargeForFilesystem(name: String, size: Int64, limit: Int64, filesystem: String)
     case renamed(FilenameSanitizer.Change)
     case skippedUnreadable(path: String, reason: String)
+    case destinationCollision(path: String)
 
     public var isBlocking: Bool {
         switch self {
-        case .insufficientSpace, .fileTooLargeForFilesystem: return true
+        case .insufficientSpace, .fileTooLargeForFilesystem, .destinationCollision: return true
         default: return false
         }
     }
@@ -45,6 +46,8 @@ public enum PlanWarning: Hashable, Sendable {
             return "\u{201C}\(change.original)\u{201D} was saved as \u{201C}\(change.sanitized)\u{201D} \u{2014} \(change.reason)."
         case .skippedUnreadable(let path, let reason):
             return "Skipped \(path): \(reason)"
+        case .destinationCollision(let path):
+            return "More than one item would use \(path), or a file and folder conflict there. Copy these items separately or rename them first."
         }
     }
 }
@@ -89,7 +92,8 @@ public struct TransferPlanner: Sendable {
         device: DeviceID,
         toLocalDirectory destination: URL,
         conflicts resolver: any ConflictResolving,
-        includeHidden: Bool = true
+        includeHidden: Bool = true,
+        relativeTo sourceRoot: RemotePath? = nil
     ) async throws -> TransferPlan {
         var plan = TransferPlan()
         let sanitizer = FilenameSanitizer(destination: .macOS)
@@ -98,6 +102,9 @@ public struct TransferPlanner: Sendable {
         for source in sources {
             try Task.checkCancellation()
             guard let parent = source.path.parent else { continue }
+            if let sourceRoot, source.path.relative(to: sourceRoot) == nil {
+                throw TransferError.protocolError("The source is outside the selected import folder.")
+            }
 
             var entries: [RemoteFile] = [source]
             if source.kind == .directory {
@@ -114,7 +121,7 @@ public struct TransferPlanner: Sendable {
                 }
                 guard includeHidden || !entry.isHidden else { continue }
 
-                let relative = entry.path.relative(to: parent) ?? RemotePath(entry.name)
+                let relative = entry.path.relative(to: sourceRoot ?? parent) ?? RemotePath(entry.name)
                 let (safeComponents, changes) = sanitizer.sanitize(components: relative.components)
                 plan.warnings.append(contentsOf: changes.map { PlanWarning.renamed($0) })
 
@@ -122,17 +129,24 @@ public struct TransferPlanner: Sendable {
                 for component in safeComponents { localURL.appendPathComponent(component) }
 
                 var resolution: ConflictResolution?
-                if entry.kind != .directory, fileManager.fileExists(atPath: localURL.path) {
+                var isDirectory: ObjCBool = false
+                let exists = fileManager.fileExists(atPath: localURL.path, isDirectory: &isDirectory)
+                if exists, (entry.kind == .directory) != isDirectory.boolValue {
+                    plan.warnings.append(.destinationCollision(path: localURL.path))
+                    continue
+                }
+                if entry.kind != .directory, exists {
                     let decision = try await decide(
                         blanket: &blanketDecision,
                         resolver: resolver,
                         context: localConflictContext(localURL: localURL, source: entry)
                     )
                     if decision == .skip { continue }
-                    if decision == .replaceIfNewer,
-                       let localDate = modificationDate(of: localURL),
-                       let remoteDate = entry.modified,
-                       remoteDate <= localDate.addingTimeInterval(1) { continue }
+                    if decision == .replaceIfNewer {
+                        guard let localDate = modificationDate(of: localURL),
+                              let remoteDate = entry.modified,
+                              remoteDate > localDate.addingTimeInterval(1) else { continue }
+                    }
                     resolution = decision
                 }
 
@@ -159,7 +173,7 @@ public struct TransferPlanner: Sendable {
                 volume: destination.path, wasVerified: true
             ))
         }
-        return orderedDirectoriesFirst(plan)
+        return orderedDirectoriesFirst(checkDestinations(plan, caseInsensitive: true))
     }
 
     // MARK: - Mac to device
@@ -203,7 +217,16 @@ public struct TransferPlanner: Sendable {
                 }
 
                 var resolution: ConflictResolution?
-                if !local.isDirectory, let existing = try? await transport.stat(remotePath), existing.kind == .file {
+                let existing = try await transport.stat(remotePath)
+                if let existing, local.isDirectory != (existing.kind == .directory) {
+                    plan.warnings.append(.destinationCollision(path: remotePath.string))
+                    continue
+                }
+                if !local.isDirectory, let existing {
+                    guard existing.kind == .file else {
+                        plan.warnings.append(.destinationCollision(path: remotePath.string))
+                        continue
+                    }
                     let decision = try await decide(
                         blanket: &blanketDecision,
                         resolver: resolver,
@@ -217,11 +240,14 @@ public struct TransferPlanner: Sendable {
                         )
                     )
                     if decision == .skip { continue }
-                    if decision == .replaceIfNewer, let remoteDate = existing.modified,
-                       let localDate = local.modified, localDate <= remoteDate.addingTimeInterval(1) { continue }
+                    if decision == .replaceIfNewer {
+                        guard let remoteDate = existing.modified, let localDate = local.modified,
+                              localDate > remoteDate.addingTimeInterval(1) else { continue }
+                    }
                     if decision == .keepBoth {
-                        let siblings = Set(((try? await transport.list(remotePath.parent ?? destination)) ?? []).map(\.name))
-                        let unique = ConflictNaming.uniqueName(for: remotePath.name, existing: siblings)
+                        let siblings = Set(try await transport.list(remotePath.parent ?? destination).map(\.name))
+                        let unique = ConflictNaming.uniqueName(for: remotePath.name, existing: siblings,
+                            caseInsensitive: volume?.filesystem == .fat32 || volume?.filesystem == .exfat)
                         remotePath = (remotePath.parent ?? destination).appending(unique)
                     }
                     resolution = decision
@@ -265,10 +291,38 @@ public struct TransferPlanner: Sendable {
                 plan.warnings.append(.freeSpaceUnverifiable(volume: volume.displayName, reported: nil))
             }
         }
-        return orderedDirectoriesFirst(plan)
+        return orderedDirectoriesFirst(checkDestinations(plan, caseInsensitive:
+            volume?.filesystem == .fat32 || volume?.filesystem == .exfat))
     }
 
     // MARK: - Helpers
+
+    /// Names can collide after flattening selections or sanitizing components.
+    /// Deduplicate an overlapping selection, but block different sources before
+    /// they can silently replace one another. Mac checks are conservative for
+    /// the common case-insensitive destination filesystem.
+    private func checkDestinations(_ plan: TransferPlan, caseInsensitive: Bool) -> TransferPlan {
+        var plan = plan
+        var destinations: [String: TransferItem] = [:]
+        plan.items = plan.items.filter { item in
+            let path = item.direction == .pull ? item.localURL.standardizedFileURL.path : item.remotePath.string
+            let key = caseInsensitive
+                ? path.folding(options: [.caseInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+                    .precomposedStringWithCanonicalMapping
+                : path
+            if let previous = destinations[key] {
+                let sameSource = item.direction == .pull
+                    ? previous.remotePath == item.remotePath
+                    : previous.localURL.standardizedFileURL == item.localURL.standardizedFileURL
+                if sameSource, previous.isDirectoryPlaceholder == item.isDirectoryPlaceholder { return false }
+                plan.warnings.append(.destinationCollision(path: path))
+            } else {
+                destinations[key] = item
+            }
+            return true
+        }
+        return plan
+    }
 
     private func decide(
         blanket: inout ConflictResolution?,
@@ -356,7 +410,9 @@ public struct TransferPlanner: Sendable {
     }
 
     private func localFreeSpace(at url: URL) -> Int64? {
-        let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-        return values?.volumeAvailableCapacityForImportantUsage
+        // Important-usage capacity reported zero in the workspace sandbox
+        // while the filesystem reported free space and allowed writes.
+        let attributes = try? fileManager.attributesOfFileSystem(forPath: url.path)
+        return (attributes?[.systemFreeSize] as? NSNumber)?.int64Value
     }
 }

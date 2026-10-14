@@ -153,6 +153,9 @@ struct PorterCommands: Commands {
                 .keyboardShortcut("r", modifiers: .command)
         }
         CommandMenu("Transfer") {
+            Button("Import Photos…") { model.presentPhotoImport() }
+                .disabled(browserIsVisible != true || !model.canImportPhotos || !model.canUseActivePane)
+            Divider()
             Button(model.activePane == .mac ? "Copy to Device" : "Copy to Mac") {
                 model.requestBrowserCommand(.copyAcross)
             }

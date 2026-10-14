@@ -50,6 +50,8 @@ Each pane has independent Back and Forward buttons and Command-[ / Command-]
 history. Returning to a folder restores its selection and scroll position;
 refresh preserves selections of files still present. Phone history resets when
 switching devices or storage volumes and commits only after a folder loads.
+Mac folder errors keep the last view, selection, and history intact. Use the
+inline **Retry** button to retry the failed folder or refresh.
 List view uses native, resizable Name, Date Modified, Size, and Kind columns.
 Click a header to sort; each pane saves its own widths and sorting preferences.
 
@@ -73,6 +75,51 @@ them across folder visits. File bytes used for fallbacks are deleted after
 rendering. Refresh and device changes clear the remote image cache. Settings
 also contains the preview/sidebar options, each pane's preferences, and the
 menu bar button toggle; choices persist across launches.
+
+## Import photos and videos
+
+Choose **Import Photos** in the toolbar or **Transfer → Import Photos…**. Select
+Camera (DCIM), Pictures, or the phone folder currently open in the browser.
+The selected storage volume is used, including an SD card when selected.
+
+Choose a Mac destination and whether to include videos, then click **Scan**.
+Scanning lists supported photo and video filenames without downloading their
+contents. Hidden files and hidden subfolders are excluded. All found files are
+selected initially; use the list or Select All and Deselect All to change the
+selection.
+
+Choose how to handle existing files: **Keep Both**, **Skip**, or **Replace**.
+Keep Both is the default. Click **Review Import** to check the file count,
+space requirements, and any changed filenames, then click **Import** to add the
+files to the transfer queue. Subfolders are preserved inside the source folder;
+for example, camera files appear under `DCIM/Camera` in the destination.
+
+Changing the source or video option requires another scan. Changing the
+destination, selection, or existing-file choice requires another review. Stop
+cancels an ongoing scan or review; queued copies use the transfer drawer's
+controls. Transfers retain the normal ADB verification and resume behavior, or
+the normal MTP limits. Import copies files into a folder on the Mac rather than
+adding them to the Photos library.
+
+## Safe transfer completion
+
+Copies use a separate temporary file for each queued item. If several selected
+sources would become the same filename, Porter stops the batch and asks you to
+rename them or copy them separately. Files cannot replace folders.
+
+Keep Both and Skip are checked again when a copy finishes. A destination that
+appears after planning stops a normal copy without replacing that file; start
+the copy again to choose how to handle the conflict. Conflict prompts from
+separate copies wait their turn. Closing a prompt skips its remaining conflicts.
+
+When replacing a phone file, Porter keeps the original in a temporary backup
+until the new copy is placed. If a disconnect prevents recovery, the failed
+transfer shows the backup's path. Reconnect and recover that file before
+removing the backup. Remote replacement is not an atomic transaction.
+
+Interrupted copies saved by older releases restart with the new temporary
+naming scheme. Older `.porterpart` files are left untouched; remove them only
+after checking that the corresponding copy has completed.
 
 ## File Transfer mode (MTP)
 

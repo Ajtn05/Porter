@@ -1,4 +1,5 @@
 import Foundation
+import PorterKit
 
 private struct BrowserCheckFailed: Error { let message: String }
 
@@ -50,9 +51,70 @@ struct AppBrowserChecks {
         try check(model.localHistory.forwardDestination == nil && model.localDirectory == root.deletingLastPathComponent(),
                   "Navigating to a new parent kept an obsolete Forward branch")
         print("App browser checks: 6 passed")
+        let recoveryRoot = root.appendingPathComponent("Recovery")
+        let recoveryChild = recoveryRoot.appendingPathComponent("Child")
+        try manager.createDirectory(at: recoveryChild, withIntermediateDirectories: true)
+        let recoveryPhoto = recoveryRoot.appendingPathComponent("photo.jpg")
+        try Data([3]).write(to: recoveryPhoto)
+        let recoveryModel = AppModel()
+        recoveryModel.localDirectory = recoveryRoot
+        recoveryModel.refreshLocalPane()
+        recoveryModel.localSelection = [recoveryPhoto.path]
+        let missing = recoveryRoot.appendingPathComponent("Missing")
+        recoveryModel.open(localDirectory: missing)
+        try check(recoveryModel.localDirectory == recoveryRoot && recoveryModel.localError != nil
+                  && recoveryModel.localSelection == [recoveryPhoto.path] && recoveryModel.localHistory.backDestination == nil,
+                  "A failed folder load discarded the last good location or selection")
+        try manager.createDirectory(at: missing, withIntermediateDirectories: true)
+        recoveryModel.retryLocalNavigation()
+        try check(recoveryModel.localDirectory == missing && recoveryModel.localError == nil,
+                  "Retry did not reopen the failed destination")
+        recoveryModel.goBack(in: .mac)
+        recoveryModel.open(localDirectory: recoveryChild)
+        try manager.removeItem(at: recoveryChild)
+        recoveryModel.refreshLocalPane()
+        recoveryModel.goBack(in: .mac)
+        recoveryModel.goForward(in: .mac)
+        try check(recoveryModel.localDirectory == recoveryRoot && recoveryModel.localSelection == [recoveryPhoto.path]
+                  && recoveryModel.localHistory.forwardDestination?.path == recoveryChild && recoveryModel.localError != nil,
+                  "Failed Forward navigation moved history or dropped the saved selection")
+        let lastEntries = recoveryModel.localEntries
+        try manager.removeItem(at: recoveryRoot)
+        recoveryModel.refreshLocalPane()
+        try check(recoveryModel.localError != nil && recoveryModel.localEntries == lastEntries
+                  && recoveryModel.localSelection == [recoveryPhoto.path],
+                  "A failed refresh presented an empty folder or lost the selection")
+        print("Browser recovery checks: 4 passed")
         let clipboardChecks = try await ClipboardChecks.run(in: root)
         print("Clipboard checks: \(clipboardChecks) passed")
         let operationChecks = try LocalFileOperationChecks.run(in: root)
         print("Local file operation checks: \(operationChecks) passed")
+        let photoImportChecks = try await PhotoImportChecks.run(in: root)
+        print("Photo import checks: \(photoImportChecks) passed")
+        let conflictModel = AppModel()
+        let context = ConflictContext(name: "photo.jpg", destinationPath: "/photos/photo.jpg",
+            sourceSize: 3, destinationSize: 3, sourceModified: nil, destinationModified: nil)
+        let firstRequest = Task { await conflictModel.resolveConflict(context) }
+        while conflictModel.pendingConflict == nil { await Task.yield() }
+        let firstConflict = conflictModel.pendingConflict!
+        let secondRequest = Task { await conflictModel.resolveConflict(context) }
+        while conflictModel.waitingConflicts.isEmpty { await Task.yield() }
+        try check(conflictModel.pendingConflict?.id == firstConflict.id && conflictModel.waitingConflicts.count == 1,
+                  "A concurrent plan replaced an unanswered conflict")
+        firstConflict.answer(.keepBoth, applyToAll: false)
+        firstConflict.cancel()
+        conflictModel.pendingConflict = nil
+        conflictModel.conflictSheetDismissed()
+        let firstDecision = await firstRequest.value
+        try check(firstDecision.resolution == .keepBoth && conflictModel.pendingConflict?.id != firstConflict.id,
+                  "Answering a conflict lost its decision or did not advance the next request")
+        conflictModel.pendingConflict?.cancel()
+        conflictModel.pendingConflict = nil
+        conflictModel.conflictSheetDismissed()
+        let secondDecision = await secondRequest.value
+        try check(secondDecision.resolution == .skip && secondDecision.applyToAll
+                  && conflictModel.pendingConflict == nil && !conflictModel.isConflictPresented,
+                  "Dismissing a conflict left its planner suspended")
+        print("Conflict prompt checks: 3 passed")
     }
 }

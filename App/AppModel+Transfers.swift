@@ -33,17 +33,34 @@ struct InteractiveConflictResolver: ConflictResolving {
     let model: AppModel
 
     func resolve(_ context: ConflictContext) async -> ConflictDecision {
-        await withCheckedContinuation { continuation in
-            Task { @MainActor in
-                model.pendingConflict = PendingConflict(
-                    context: context, remaining: 0, continuation: continuation
-                )
-            }
-        }
+        await model.resolveConflict(context)
     }
 }
 
 extension AppModel {
+
+    func resolveConflict(_ context: ConflictContext) async -> ConflictDecision {
+        await withCheckedContinuation { continuation in
+            let conflict = PendingConflict(context: context, remaining: 0, continuation: continuation)
+            waitingConflicts.append(conflict)
+            presentNextConflict()
+        }
+    }
+
+    func presentNextConflict() {
+        guard !isConflictPresented, !waitingConflicts.isEmpty else { return }
+        isConflictPresented = true
+        pendingConflict = waitingConflicts.removeFirst()
+    }
+
+    /// SwiftUI clears the sheet binding before onDismiss. Cancel is idempotent
+    /// and also called by the sheet when it disappears without an answer.
+    func conflictSheetDismissed() {
+        pendingConflict?.cancel()
+        pendingConflict = nil
+        isConflictPresented = false
+        presentNextConflict()
+    }
 
     // MARK: - Copying
 
@@ -86,6 +103,7 @@ extension AppModel {
     }
 
     func copyToMac(_ files: [RemoteFile], from device: Device, into destination: URL) {
+        let includeHidden = androidView.showHiddenFiles
         Task {
             do {
                 let transport = try await coordinator.transport(for: device.id)
@@ -93,7 +111,7 @@ extension AppModel {
                     sources: files, from: transport, device: device.id,
                     toLocalDirectory: destination,
                     conflicts: InteractiveConflictResolver(model: self),
-                    includeHidden: androidView.showHiddenFiles
+                    includeHidden: includeHidden
                 )
                 await present(plan)
             } catch {
@@ -111,14 +129,16 @@ extension AppModel {
 
     func copyToDevice(_ urls: [URL], into destination: RemotePath) {
         guard let device = selectedDevice else { return }
+        let volume = selectedVolume
+        let includeHidden = macView.showHiddenFiles
         Task {
             do {
                 let transport = try await coordinator.transport(for: device.id)
                 let plan = try await TransferPlanner().planPush(
                     sources: urls, to: destination, on: transport, device: device.id,
-                    volume: selectedVolume,
+                    volume: volume,
                     conflicts: InteractiveConflictResolver(model: self),
-                    includeHidden: macView.showHiddenFiles
+                    includeHidden: includeHidden
                 )
                 await present(plan)
             } catch {
@@ -168,10 +188,11 @@ extension AppModel {
 
     func createFolderOnDevice(named name: String) {
         guard let device = selectedDevice, !name.isEmpty else { return }
+        let destination = devicePath.appending(name)
         Task {
             do {
                 let transport = try await coordinator.transport(for: device.id)
-                try await transport.createDirectory(devicePath.appending(name))
+                try await transport.createDirectory(destination)
                 await refreshDevicePane()
             } catch {
                 await MainActor.run { self.reportPlanFailure(error) }
