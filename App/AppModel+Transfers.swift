@@ -179,11 +179,16 @@ extension AppModel {
         }
     }
 
-    func createFolderOnMac(named name: String) {
-        guard !name.isEmpty else { return }
+    func createFolderOnMac(named name: String) -> String? {
+        if let message = BrowserFileName.validationMessage(for: name) { return message }
         let url = localDirectory.appendingPathComponent(name)
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
-        refreshLocalPane()
+        do {
+            try localFileOperations.createFolder(named: name, in: localDirectory)
+            refreshLocalPane()
+            return nil
+        } catch {
+            return "Couldn\u{2019}t create \u{201C}\(name)\u{201D}. \(LocalFileFailure(url: url, error: error).reason)"
+        }
     }
 
     func renameOnDevice(_ file: RemoteFile, to name: String) {
@@ -200,11 +205,16 @@ extension AppModel {
         }
     }
 
-    func renameOnMac(_ file: LocalFile, to name: String) {
-        guard !name.isEmpty, name != file.name else { return }
-        let destination = file.url.deletingLastPathComponent().appendingPathComponent(name)
-        try? FileManager.default.moveItem(at: file.url, to: destination)
-        refreshLocalPane()
+    func renameOnMac(_ file: LocalFile, to name: String) -> String? {
+        if let message = BrowserFileName.validationMessage(for: name) { return message }
+        guard name != file.name else { return nil }
+        do {
+            try localFileOperations.rename(file, to: name)
+            refreshLocalPane()
+            return nil
+        } catch {
+            return "Couldn\u{2019}t rename \u{201C}\(file.name)\u{201D} to \u{201C}\(name)\u{201D}. \(LocalFileFailure(url: file.url, error: error).reason)"
+        }
     }
 
     /// Deletes the device-pane selection. Irreversible: Android exposes no
@@ -228,10 +238,10 @@ extension AppModel {
     /// Moves the Mac-pane selection to the Trash.
     func trashSelectedOnMac() {
         let doomed = localEntries.filter { localSelection.contains($0.id) }
-        for file in doomed {
-            try? FileManager.default.trashItem(at: file.url, resultingItemURL: nil)
-        }
+        guard !doomed.isEmpty else { return }
+        let report = localFileOperations.trash(doomed)
         refreshLocalPane()
+        localTrashReport = report.failures.isEmpty ? nil : report
     }
 
     var deviceSelectionDescription: String {

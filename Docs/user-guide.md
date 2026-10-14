@@ -41,6 +41,11 @@ pane. Phone clipboard entries are usable within Porter, while Mac file URLs
 can also be pasted into Finder. Text fields retain their normal clipboard
 shortcuts.
 
+On the Mac, New Folder and Rename keep the name dialog open when an operation
+fails and show the reason beside the editable name. Invalid names and existing
+destinations are reported. Move to Trash processes the full selection, reports
+each failed item, and keeps remaining files selected for another attempt.
+
 Each pane has independent Back and Forward buttons and Command-[ / Command-]
 history. Returning to a folder restores its selection and scroll position;
 refresh preserves selections of files still present. Phone history resets when

@@ -52,5 +52,7 @@ struct AppBrowserChecks {
         print("App browser checks: 6 passed")
         let clipboardChecks = try await ClipboardChecks.run(in: root)
         print("Clipboard checks: \(clipboardChecks) passed")
+        let operationChecks = try LocalFileOperationChecks.run(in: root)
+        print("Local file operation checks: \(operationChecks) passed")
     }
 }

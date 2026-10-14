@@ -168,6 +168,7 @@ final class AppModel {
     var planWarnings: [PlanWarning] = []
     var showWarnings = false
     var finderDomainMessage: String?
+    var localTrashReport: LocalTrashReport?
     private(set) var mtpConflicts: [MTPConflict] = []
     private(set) var mtpQuitError: String?
     private var promptedMTPLocations: Set<Int> = []
@@ -176,13 +177,15 @@ final class AppModel {
     let coordinator: DeviceCoordinator
     let engine: TransferEngine
     let clipboard: BrowserClipboard
+    let localFileOperations: LocalFileOperations
     private let queue: TransferQueue
     private let fileProviderHost: PorterFileProviderHost
     private var eventTask: Task<Void, Never>?
     private var deviceTask: Task<Void, Never>?
 
-    init(clipboard: BrowserClipboard = BrowserClipboard()) {
+    init(clipboard: BrowserClipboard = BrowserClipboard(), localFileOperations: LocalFileOperations = LocalFileOperations()) {
         self.clipboard = clipboard
+        self.localFileOperations = localFileOperations
         let queue = TransferQueue()
         let coordinator = DeviceCoordinator()
         self.queue = queue

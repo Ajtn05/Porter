@@ -5,9 +5,10 @@ struct RenameSheet: View {
     var title: String = "Rename"
     let currentName: String
     var confirmTitle: String = "Rename"
-    let onConfirm: (String) -> Void
+    let onConfirm: (String) -> String?
 
     @State private var name: String = ""
+    @State private var operationError: String?
     @Environment(\.dismiss) private var dismiss
     @FocusState private var isFocused: Bool
 
@@ -18,13 +19,20 @@ struct RenameSheet: View {
                 .textFieldStyle(.roundedBorder)
                 .focused($isFocused)
                 .onSubmit(confirm)
+                .onChange(of: name) { _, _ in operationError = nil }
+            if let message = operationError ?? BrowserFileName.validationMessage(for: name.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                Text(message)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button(confirmTitle, action: confirm)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(BrowserFileName.validationMessage(for: name.trimmingCharacters(in: .whitespacesAndNewlines)) != nil)
             }
         }
         .padding(20)
@@ -36,10 +44,48 @@ struct RenameSheet: View {
     }
 
     private func confirm() {
-        let trimmed = name.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return }
-        onConfirm(trimmed)
-        dismiss()
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard BrowserFileName.validationMessage(for: trimmed) == nil else { return }
+        operationError = onConfirm(trimmed)
+        if operationError == nil { dismiss() }
+    }
+}
+
+struct LocalTrashFailuresSheet: View {
+    let report: LocalTrashReport
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Couldn\u{2019}t move \(report.failures.count == 1 ? "this item" : "these items") to the Trash", systemImage: "exclamationmark.triangle.fill")
+                .font(.headline)
+                .foregroundStyle(.orange)
+            if report.completedCount > 0 {
+                Text("\(report.completedCount) \(report.completedCount == 1 ? "item was" : "items were") moved to the Trash. The remaining items are still selected.")
+                    .font(.callout)
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(report.failures) { failure in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(failure.url.lastPathComponent).fontWeight(.semibold)
+                            Text(failure.url.deletingLastPathComponent().path)
+                                .font(.caption).foregroundStyle(.secondary)
+                            Text(failure.reason).font(.callout)
+                        }
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            .frame(maxHeight: 280)
+            HStack {
+                Spacer()
+                Button("OK") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 480)
     }
 }
 

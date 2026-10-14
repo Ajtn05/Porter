@@ -150,6 +150,9 @@ struct MacPane: View {
                 model.createFolderOnMac(named: $0)
             }
         }
+        .sheet(item: $model.localTrashReport) { report in
+            LocalTrashFailuresSheet(report: report)
+        }
     }
 }
 
@@ -270,11 +273,12 @@ struct DevicePane: View {
             isCreatingFolder = true
         }
         .sheet(item: $renaming) { file in
-            RenameSheet(currentName: file.name) { model.renameOnDevice(file, to: $0) }
+            RenameSheet(currentName: file.name) { model.renameOnDevice(file, to: $0); return nil }
         }
         .sheet(isPresented: $isCreatingFolder) {
             RenameSheet(title: "New Folder", currentName: "untitled folder", confirmTitle: "Create") {
                 model.createFolderOnDevice(named: $0)
+                return nil
             }
         }
         .confirmationDialog(

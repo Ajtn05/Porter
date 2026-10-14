@@ -1,12 +1,13 @@
 # Status
 
-Current implementation snapshot: 13 October 2026.
+Current implementation snapshot: 14 October 2026.
 
 | Area | State | Remaining boundary |
 | --- | --- | --- |
 | ADB USB transfers | Implemented | Earlier Galaxy S22 testing exercised browse and copy. Resume, checksums, modification dates, and small-file batching have package test coverage. |
 | MTP USB transfers | Implemented | Direct protocol codec, USB pipe, session, interface claimer, and transport are present. The session serializes metadata requests and a complete upload as one exchange. More real-device performance and compatibility measurements are needed. |
 | Finder File Provider | Read-only source prototype | The extension enumerates storage and asks the host app to materialize files through an App-Group bridge. Signed Finder registration and downloads need on-device validation. |
+| Mac file operations | Implemented | New Folder and Rename retain editable names on failure. Trash reports all failures and preserves the remaining selection. Workspace checks cover collisions, invalid names, missing sources, and partial failures. Dialog presentation still needs desktop validation. |
 | Browser views and previews | Implemented | Commands target the active pane, with Finder keyboard bindings, clipboard transfers between panes, independent Back/Forward histories, and selection/scroll restoration. Finder file URLs can be pasted into the Android pane. Native list columns resize and sort, with saved widths per pane. The Android sidebar and icons prefer native MTP thumbnails and defer previews during directory loading. Desktop clipboard behavior, layout, dragging, and thumbnail rendering still need runtime validation. |
 | Phase 3 | Partial | Quick Look materializes a selected remote file. Photo import, watched folders, and APK sideloading remain future work. |
 
@@ -14,6 +15,18 @@ The Android companion and paired Wi-Fi transfer path have been removed. Porter
 connects to phones over USB through ADB or MTP.
 
 ## Build verification
+
+On 14 October 2026, Mac file operations passed eight new scenario checks
+alongside the six app-model and eight clipboard checks. Coverage includes
+existing destinations, case-only renames, invalid names, unavailable sources,
+partial Trash failures, remaining selections, and retry after a failure. Trash
+tests use simulated moves into workspace fixtures and do not touch the user's
+Trash. A fresh universal Release app, bundled ADB, and embedded Finder
+extension passed architecture, bundle, and ad hoc signature checks. The current
+app is at `build/Porter.app`, and build intermediates were removed. Porter was
+not launched; dialog presentation and the system Trash still need runtime
+validation. PorterKit sources were unchanged, so the package tests were not
+rerun for this change.
 
 On 13 October 2026, clipboard transfers passed eight scenario checks alongside
 the fifteen browser state checks, six app-model checks, and all 184 package
