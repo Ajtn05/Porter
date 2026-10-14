@@ -41,6 +41,16 @@ macOS may give the MTP interface to `ptpcamerad`. Porter arms its interface
 claimer before discovery and asks the user to reconnect if another process
 wins the claim. The app does not seize another process's interface.
 
+## Photo import
+
+`PhotoImportScanner` enumerates metadata under the chosen storage folder and
+filters regular files by photo and video extensions. `PhotoImportSession`
+captures the source phone and folder, tracks selection and destination changes,
+and discards obsolete scan and review results. Review re-stats selected sources
+and uses `TransferPlanner` with a shared relative-path root to preserve albums.
+Confirmed imports enter the ordinary transfer queue. Existing-file policy is
+retained through final placement, including when a file appears after review.
+
 ## Finder bridge
 
 The read-only File Provider extension cannot spawn `adb` from its sandbox. It
@@ -56,10 +66,35 @@ within a file, hash a file in place, report reliable sizes, and set an mtime.
 Both publish `TransportCapabilities`, and the engine reads those rather than
 switching on the transport kind.
 
-**Partial files.** In-flight bytes live in a `.porterpart` sidecar. The real
-filename only appears once the file is complete. ADB can resume an aligned
+**Partial files.** In-flight bytes live in a `.porter-<item UUID>.porterpart`
+sidecar beside the destination. Persisted item IDs isolate queued transfers
+and retain the same temporary name on retry. Final destinations are serialized
+by the engine, and bulk-read claims use the local sidecar rather than a remote
+path shared by several phones. The real filename only appears once the file
+is complete. ADB can resume an aligned
 partial after a disconnect; MTP deliberately restarts it because ranged reads
 and resumable writes are not dependable across Android MTP implementations.
+
+**Placement.** The planner blocks source names that converge after sanitization,
+case folding, or flattening; overlapping selections are deduplicated. File and
+folder type conflicts also block. Destination metadata failures propagate.
+The engine rechecks conflict choices when placing verified bytes. Unplanned
+destinations fail safely, Skip reports a skipped item, and Replace if Newer
+requires a newer source date. Local Replace uses a same-directory atomic rename
+instead of deleting first. Phone Replace renames the original to a unique
+`.porterbackup`, places the copy, then removes the backup. A placement failure
+attempts rollback even after cancellation. If rollback or backup removal fails,
+the drawer reports the retained backup path. Only placement is serialized on a
+phone; byte copying retains its supported concurrency. Remote placement cannot
+guarantee atomicity against changes made by other apps or a device disconnect.
+
+**Browser errors and prompts.** Mac navigation commits its path and history
+only after enumeration succeeds. Failed refresh preserves the last good view;
+the inline Retry action retains the failed destination and navigation mode.
+Interactive conflict requests queue while the current sheet is presented;
+dismissing a sheet resumes its planner with Skip rather than leaving it parked.
+Copy options, storage metadata, and new-folder destinations are captured before
+resolving a transport.
 
 **Verification.** With ADB, the device hashes its own copy and
 Porter hashes its copy; a mismatch discards the result. MTP has no device-side

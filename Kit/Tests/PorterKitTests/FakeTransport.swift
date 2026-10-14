@@ -60,6 +60,9 @@ actor FakeTransport: DeviceTransport {
     /// Paths the batch refuses to deliver, standing in for a file the device
     /// would not read. They must still arrive by the single-file path.
     var bulkPullOmits: Set<String> = []
+    var failingMoveSources: Set<String> = []
+    var failingStatPaths: Set<String> = []
+    var failsBackupRestoration = false
 
     init(kind: TransportKind = .adb, capabilities: TransportCapabilities? = nil) {
         self.kind = kind
@@ -92,6 +95,9 @@ actor FakeTransport: DeviceTransport {
     func setBulkPullOmits(_ value: Set<String>) { bulkPullOmits = value }
     func setHasChecksumTool(_ value: Bool) { hasChecksumTool = value }
     func setTruncateSupported(_ value: Bool) { truncateSupported = value }
+    func setFailingMoveSources(_ paths: Set<String>) { failingMoveSources = paths }
+    func setFailingStatPaths(_ paths: Set<String>) { failingStatPaths = paths }
+    func setFailsBackupRestoration(_ value: Bool) { failsBackupRestoration = value }
     func contents(of path: String) -> Data? { files[path] }
     func exists(_ path: String) -> Bool { files[path] != nil || directories.contains(path) }
     func allPaths() -> [String] { files.keys.sorted() }
@@ -128,6 +134,7 @@ actor FakeTransport: DeviceTransport {
     }
 
     func stat(_ path: RemotePath) async throws -> RemoteFile? {
+        if failingStatPaths.contains(path.string) { throw TransferError.permissionDenied(path) }
         if let data = files[path.string] {
             return RemoteFile(path: path, size: Int64(data.count),
                               modified: modificationDates[path.string], kind: .file)
@@ -158,6 +165,10 @@ actor FakeTransport: DeviceTransport {
     }
 
     func move(from source: RemotePath, to destination: RemotePath) async throws {
+        if failingMoveSources.contains(source.string) { throw TransferError.permissionDenied(source) }
+        if failsBackupRestoration, source.name.hasSuffix(".porterbackup") {
+            throw TransferError.deviceDisconnected(during: "restoring original")
+        }
         guard let data = files.removeValue(forKey: source.string) else {
             throw TransferError.notFound(source)
         }

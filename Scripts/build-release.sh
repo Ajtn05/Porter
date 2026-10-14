@@ -6,7 +6,7 @@ cd "$repository_dir"
 # There is one unpacked app, and a failed build must never leave it current.
 mkdir -p build
 rm -rf build/Porter.app build/DerivedData DerivedData build/release
-rm -f build/build-info.json
+rm -f build/build-info.json build/release-validation.json build/release-packaging.log build/github-release.json
 trap 'rm -rf build/Porter.app build/release; rm -f build/build-info.json' ERR
 : > build/build.log
 source_revision=$(git -c core.fsmonitor=false rev-parse HEAD)
@@ -33,7 +33,7 @@ release_notes="Docs/releases/v$configured_version.md"
     exit 1
 }
 
-xcodegen generate
+xcodegen generate > build/project-generation.log 2>&1
 extra_settings=()
 if [[ -n "${PORTER_SWIFT_FLAGS:-}" ]]; then
     extra_settings+=("OTHER_SWIFT_FLAGS=$PORTER_SWIFT_FLAGS")

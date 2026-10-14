@@ -122,14 +122,22 @@ public struct TransferItem: Identifiable, Sendable, Codable, Hashable {
 
     public var localPartialURL: URL {
         localURL.deletingLastPathComponent()
-            .appendingPathComponent(localURL.lastPathComponent + Self.partialSuffix)
+            .appendingPathComponent(partialName)
     }
 
     public var remotePartialPath: RemotePath {
         guard let parent = remotePath.parent else {
-            return RemotePath(remotePath.name + Self.partialSuffix)
+            return RemotePath(partialName)
         }
-        return parent.appending(remotePath.name + Self.partialSuffix)
+        return parent.appending(partialName)
+    }
+
+    /// The persisted item ID isolates attempts targeting the same final name.
+    /// Retries retain their own sidecar without trusting unrelated partials.
+    private var partialName: String {
+        // Keep the temporary component short even when the final name is near
+        // the filesystem's name-length limit.
+        ".porter-\(id.uuidString)\(Self.partialSuffix)"
     }
 }
 

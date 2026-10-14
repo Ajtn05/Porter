@@ -28,7 +28,7 @@ extension AppModel {
         let key = "android:\(previewSession):\(device.id.rawValue):\(file.id):\(file.size):\(file.modified?.timeIntervalSince1970 ?? 0)"
         let image = try await previewThumbnails.image(key: key, remoteSize: row.size, isIcon: isIcon,
                                                        nativeThumbnail: native) { [self] in
-            guard previewGeneration == generation, selectedDeviceID == device.id,
+            guard previewGeneration == generation, selectedDeviceID == device.id, photoImportSession == nil,
                   !summary.isRunning, !isLoadingDevice else { throw CancellationError() }
             let transport = try await coordinator.transport(for: device.id)
             if native, let data = try await transport.thumbnail(file.path),

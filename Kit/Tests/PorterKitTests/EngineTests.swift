@@ -288,7 +288,7 @@ struct TransferEngineTests {
         #expect(settled.first?.state == .completed)
         #expect(await transport.contents(of: "/sdcard/Download/upload.bin") == payload)
         // The sidecar is gone and only the final name remains.
-        #expect(await transport.exists("/sdcard/Download/upload.bin.porterpart") == false)
+        #expect(await transport.exists(item.remotePartialPath.string) == false)
         #expect(settled.first?.verifiedChecksum == sha256(payload))
     }
 

@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Resolves a device ID to a live transport, reconnecting if necessary.
 ///
@@ -31,6 +32,8 @@ public actor TransferEngine {
     private let resolver: any TransportResolver
     private let fileManager: FileManager
     private var running: Set<UUID> = []
+    private var runningDestinations: [UUID: String] = [:]
+    private var placingOnDevices: Set<DeviceID> = []
     private var tasks: [UUID: Task<Void, Never>] = [:]
     private var isPaused = false
     private var meter = ThroughputMeter()
@@ -47,7 +50,7 @@ public actor TransferEngine {
     /// The batch read currently fetching each path, so a file dispatched while
     /// a batch is already fetching it waits for that batch instead of starting
     /// a second copy onto the same sidecar.
-    private var bulkPullTasks: [RemotePath: Task<Void, Never>] = [:]
+    private var bulkPullTasks: [URL: Task<Void, Never>] = [:]
 
     private var continuations: [UUID: AsyncStream<TransferEvent>.Continuation] = [:]
 
@@ -235,6 +238,7 @@ public actor TransferEngine {
             if isPaused { return }
             guard running.count < maximumConcurrency,
                   let next = await queue.nextQueued(excluding: running),
+                  !runningDestinations.values.contains(destinationKey(for: next)),
                   await hasCapacity(forDevice: next.deviceID) else {
                 if running.isEmpty {
                     // Nothing left to share a call with, and a prefetched hash
@@ -248,6 +252,7 @@ public actor TransferEngine {
             }
 
             running.insert(next.id)
+            runningDestinations[next.id] = destinationKey(for: next)
             runningDevices[next.deviceID, default: 0] += 1
             await queue.update(next.id) { $0.state = .running; $0.attempts += 1 }
             tasks[next.id] = Task { [weak self] in
@@ -284,6 +289,7 @@ public actor TransferEngine {
     private func finish(_ id: UUID) async {
         await releaseSlot(for: id)
         running.remove(id)
+        runningDestinations[id] = nil
         tasks[id] = nil
         await emitSummary()
 
@@ -303,16 +309,18 @@ public actor TransferEngine {
         do {
             let transport = try await resolver.transport(for: item.deviceID)
             transportLimits[item.deviceID] = transport.capabilities.maximumConcurrentStreams
+            let copied: Bool
             if item.isDirectoryPlaceholder {
                 try await createDirectory(for: item, using: transport)
+                copied = true
             } else {
                 switch item.direction {
-                case .pull: try await pull(item, using: transport)
-                case .push: try await push(item, using: transport)
+                case .pull: copied = try await pull(item, using: transport)
+                case .push: copied = try await push(item, using: transport)
                 }
             }
             if let updated = await queue.update(id, { entry in
-                entry.state = .completed
+                entry.state = copied ? .completed : .skipped
                 entry.bytesTransferred = entry.totalBytes
                 entry.finishedAt = Date()
                 entry.errorMessage = nil
@@ -362,7 +370,7 @@ public actor TransferEngine {
 
     // MARK: - Device to Mac
 
-    private func pull(_ item: TransferItem, using transport: any DeviceTransport) async throws {
+    private func pull(_ item: TransferItem, using transport: any DeviceTransport) async throws -> Bool {
         let partialURL = item.localPartialURL
         try fileManager.createDirectory(at: item.localURL.deletingLastPathComponent(),
                                         withIntermediateDirectories: true)
@@ -371,8 +379,7 @@ public actor TransferEngine {
         // call starts or one an earlier file started. Verification and placing
         // are unchanged either way.
         if try await bulkPulled(item, to: partialURL, using: transport) {
-            try await finishPull(item, partialURL: partialURL, transport: transport)
-            return
+            return try await finishPull(item, partialURL: partialURL, transport: transport)
         }
 
         // Resume from whatever the sidecar already holds, rounded down to a
@@ -393,8 +400,7 @@ public actor TransferEngine {
             // It writes to the same sidecar and is verified the same way, so
             // the guarantees above still hold.
             if try await fastPull(item, to: partialURL, using: transport) {
-                try await finishPull(item, partialURL: partialURL, transport: transport)
-                return
+                return try await finishPull(item, partialURL: partialURL, transport: transport)
             }
             fileManager.createFile(atPath: partialURL.path, contents: nil)
         }
@@ -429,7 +435,7 @@ public actor TransferEngine {
         try handle.synchronize()
         try handle.close()
 
-        try await finishPull(item, partialURL: partialURL, transport: transport)
+        return try await finishPull(item, partialURL: partialURL, transport: transport)
     }
 
     /// Reads this file, and the small pulls queued behind it, in one call.
@@ -447,7 +453,7 @@ public actor TransferEngine {
         if isComplete(partialURL, for: item) { return true }
         guard item.totalBytes > 0, item.totalBytes <= Self.bulkPullSizeLimit else { return false }
 
-        if let inFlight = bulkPullTasks[item.remotePath] {
+        if let inFlight = bulkPullTasks[partialURL] {
             await inFlight.value
             return isComplete(partialURL, for: item)
         }
@@ -455,7 +461,7 @@ public actor TransferEngine {
         let candidates = await queue.orderedItems
         // Re-checked after the await: a batch claiming this path could have
         // started while the queue was being read.
-        if let inFlight = bulkPullTasks[item.remotePath] {
+        if let inFlight = bulkPullTasks[partialURL] {
             await inFlight.value
             return isComplete(partialURL, for: item)
         }
@@ -470,10 +476,10 @@ public actor TransferEngine {
                 Task { await self?.recordThroughput(delta) }
             }
         }
-        for request in requests { bulkPullTasks[request.path] = task }
+        for request in requests { bulkPullTasks[request.localURL] = task }
         await task.value
-        for request in requests where bulkPullTasks[request.path] == task {
-            bulkPullTasks[request.path] = nil
+        for request in requests where bulkPullTasks[request.localURL] == task {
+            bulkPullTasks[request.localURL] = nil
         }
 
         return isComplete(partialURL, for: item)
@@ -500,7 +506,7 @@ public actor TransferEngine {
                   // Only what is still waiting: a running file has its own copy
                   // under way, and a paused one must keep the partial it has.
                   other.state == .queued,
-                  bulkPullTasks[other.remotePath] == nil,
+                  bulkPullTasks[other.localPartialURL] == nil,
                   seen.insert(other.remotePath).inserted else { continue }
             requests.append(BulkPullRequest(path: other.remotePath, localURL: other.localPartialURL))
         }
@@ -532,7 +538,7 @@ public actor TransferEngine {
 
     /// Validates a finished download, then moves it to its final name.
     private func finishPull(_ item: TransferItem, partialURL: URL,
-                            transport: any DeviceTransport) async throws {
+                            transport: any DeviceTransport) async throws -> Bool {
         // Size check first: it is free and catches the common truncation.
         let finalSize = existingSize(at: partialURL)
         if item.totalBytes > 0 && finalSize != item.totalBytes {
@@ -546,10 +552,13 @@ public actor TransferEngine {
             try await verifyPull(item, partialURL: partialURL, transport: transport)
         }
 
-        try placeLocalFile(from: partialURL, to: item.localURL, resolution: item.conflictResolution)
-        if let modified = item.sourceModified {
-            try? fileManager.setAttributes([.modificationDate: modified], ofItemAtPath: item.localURL.path)
+        try Task.checkCancellation()
+        let placedURL = try placeLocalFile(from: partialURL, to: item.localURL,
+            resolution: item.conflictResolution, sourceModified: item.sourceModified)
+        if let placedURL, let modified = item.sourceModified {
+            try? fileManager.setAttributes([.modificationDate: modified], ofItemAtPath: placedURL.path)
         }
+        return placedURL != nil
     }
 
     /// The device-side hash for a finished pull, taken from a batch where a
@@ -636,7 +645,7 @@ public actor TransferEngine {
 
     // MARK: - Mac to device
 
-    private func push(_ item: TransferItem, using transport: any DeviceTransport) async throws {
+    private func push(_ item: TransferItem, using transport: any DeviceTransport) async throws -> Bool {
         let partialPath = item.remotePartialPath
         if let parent = item.remotePath.parent {
             try await transport.createDirectory(parent)
@@ -695,15 +704,20 @@ public actor TransferEngine {
             try await verifyPush(item, partialPath: partialPath, transport: transport)
         }
 
-        // Verified, so the file can now take its real name.
-        if (try? await transport.stat(item.remotePath)) != nil {
-            try await transport.remove(item.remotePath, recursive: false)
+        // Serialize the short placement transaction, including Keep Both name
+        // allocation. Byte transfer still uses the device's stream capacity.
+        while placingOnDevices.contains(item.deviceID) {
+            try await Task.sleep(for: .milliseconds(20))
         }
-        try await transport.move(from: partialPath, to: item.remotePath)
+        try Task.checkCancellation()
+        placingOnDevices.insert(item.deviceID)
+        defer { placingOnDevices.remove(item.deviceID) }
+        guard let placedPath = try await placeRemoteFile(item, using: transport) else { return false }
 
         if transport.capabilities.supportsMtimePreservation, let modified = item.sourceModified {
-            try? await transport.setModificationDate(modified, at: item.remotePath)
+            try? await transport.setModificationDate(modified, at: placedPath)
         }
+        return true
     }
 
     private func verifyPush(_ item: TransferItem, partialPath: RemotePath, transport: any DeviceTransport) async throws {
@@ -719,6 +733,73 @@ public actor TransferEngine {
     }
 
     // MARK: - Partials
+
+    private func destinationKey(for item: TransferItem) -> String {
+        let path = item.direction == .pull
+            ? item.localURL.standardizedFileURL.resolvingSymlinksInPath().path
+            : "\(item.deviceID.rawValue):\(item.remotePath.string)"
+        // Conservatively serialize case variants, including on removable cards.
+        return "\(item.direction.rawValue):" + path.folding(options: [.caseInsensitive],
+            locale: Locale(identifier: "en_US_POSIX")).precomposedStringWithCanonicalMapping
+    }
+
+    /// MTP cannot atomically overwrite. Keep the original under a unique name
+    /// until the verified copy is placed; restore it if placement fails.
+    private func placeRemoteFile(_ item: TransferItem, using transport: any DeviceTransport) async throws -> RemotePath? {
+        var destination = item.remotePath
+        let existing = try await transport.stat(destination)
+        if let existing {
+            switch item.conflictResolution {
+            case .skip:
+                try await transport.remove(item.remotePartialPath, recursive: false)
+                return nil
+            case .keepBoth:
+                let parent = destination.parent ?? .root
+                let names = Set(try await transport.list(parent).map(\.name))
+                destination = parent.appending(ConflictNaming.uniqueName(for: destination.name, existing: names, caseInsensitive: true))
+            case .replaceIfNewer:
+                guard let sourceDate = item.sourceModified, let destinationDate = existing.modified,
+                      sourceDate > destinationDate.addingTimeInterval(1) else {
+                    try await transport.remove(item.remotePartialPath, recursive: false)
+                    return nil
+                }
+                fallthrough
+            case .replace:
+                guard existing.kind == .file else {
+                    throw TransferError.destinationConflict(path: destination.string)
+                }
+                let backup = (destination.parent ?? .root).appending(".porter-\(UUID().uuidString).porterbackup")
+                try await transport.move(from: destination, to: backup)
+                do {
+                    try await transport.move(from: item.remotePartialPath, to: destination)
+                } catch {
+                    let placementError = error
+                    // Recovery must run even when the transfer was cancelled.
+                    let restored = await Task { () -> Bool in
+                        do {
+                            guard try await transport.stat(destination) == nil else { return false }
+                            try await transport.move(from: backup, to: destination)
+                            return true
+                        } catch { return false }
+                    }.value
+                    guard restored else {
+                        throw TransferError.replacementRecoveryNeeded(path: destination.string, backup: backup.string)
+                    }
+                    throw placementError
+                }
+                do {
+                    try await transport.remove(backup, recursive: false)
+                } catch {
+                    throw TransferError.replacementRecoveryNeeded(path: destination.string, backup: backup.string)
+                }
+                return destination
+            case nil:
+                throw TransferError.destinationConflict(path: destination.string)
+            }
+        }
+        try await transport.move(from: item.remotePartialPath, to: destination)
+        return destination
+    }
 
     private func discardPartial(for item: TransferItem) async {
         switch item.direction {
@@ -751,23 +832,44 @@ public actor TransferEngine {
 
 
     /// Moves a finished download into place, applying the conflict resolution.
-    private func placeLocalFile(from partialURL: URL, to destination: URL, resolution: ConflictResolution?) throws {
+    private func placeLocalFile(from partialURL: URL, to destination: URL,
+                                resolution: ConflictResolution?, sourceModified: Date?) throws -> URL? {
         var finalURL = destination
-        if fileManager.fileExists(atPath: destination.path) {
-            switch resolution ?? .replace {
+        var isDirectory: ObjCBool = false
+        if fileManager.fileExists(atPath: destination.path, isDirectory: &isDirectory) {
+            switch resolution {
             case .skip:
-                try? fileManager.removeItem(at: partialURL)
-                return
-            case .replace, .replaceIfNewer:
-                try fileManager.removeItem(at: destination)
+                try fileManager.removeItem(at: partialURL)
+                return nil
+            case .replaceIfNewer:
+                let values = try destination.resourceValues(forKeys: [.contentModificationDateKey])
+                guard let sourceModified, let destinationDate = values.contentModificationDate,
+                      sourceModified > destinationDate.addingTimeInterval(1) else {
+                    try fileManager.removeItem(at: partialURL)
+                    return nil
+                }
+                fallthrough
+            case .replace:
+                guard !isDirectory.boolValue else {
+                    throw TransferError.destinationConflict(path: destination.path)
+                }
+                // Same-directory rename replaces a file atomically. Failure
+                // keeps the original; never unlink it before moving the copy.
+                guard Darwin.rename(partialURL.path, destination.path) == 0 else {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+                }
+                return destination
             case .keepBoth:
                 let directory = destination.deletingLastPathComponent()
-                let siblings = Set((try? fileManager.contentsOfDirectory(atPath: directory.path)) ?? [])
-                let unique = ConflictNaming.uniqueName(for: destination.lastPathComponent, existing: siblings)
+                let siblings = Set(try fileManager.contentsOfDirectory(atPath: directory.path))
+                let unique = ConflictNaming.uniqueName(for: destination.lastPathComponent, existing: siblings, caseInsensitive: true)
                 finalURL = directory.appendingPathComponent(unique)
+            case nil:
+                throw TransferError.destinationConflict(path: destination.path)
             }
         }
         try fileManager.moveItem(at: partialURL, to: finalURL)
+        return finalURL
     }
 }
 

@@ -6,7 +6,7 @@
 
 ### Your Android files, on your Mac.
 
-Browse, preview, and copy files in both directions over USB.A free, native macOS app with optional USB debugging.
+Browse, preview, and copy files in both directions over USB. A free, native macOS app with optional USB debugging.
 
 **macOS 14+ · Apple silicon & Intel · Free & open source**
 
@@ -70,9 +70,12 @@ copy is complete. Read more about [connection and transfer behavior](Docs/user-g
 3. **Choose your folders and copy.** Select the phone's storage in the sidebar,
    open a folder in each pane, and drag or copy and paste between them.
 
-**Release status:** v1.1.0 is being prepared. The universal build includes ADB;
+For a camera roll or photo folder, use **Import Photos** to scan, select photos
+and videos, and review the copy before it starts. [Photo import →](Docs/user-guide.md#import-photos-and-videos)
+
+**Release status:** v1.2.0 is being prepared. The universal build includes ADB;
 public distribution signing and notarization remain pending. Check the
-[release notes](Docs/releases/v1.1.0.md) for installation details and known limits,
+[release notes](Docs/releases/v1.2.0.md) for installation details and known limits,
 or [build from source](Docs/development.md#building-and-checks).
 
 ## A few things to know

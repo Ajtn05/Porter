@@ -33,11 +33,15 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSControl.textDidEndEditingNotification)) { _ in
             model.clipboard.refresh()
         }
-        .sheet(item: $model.pendingConflict) { conflict in
+        .sheet(item: $model.pendingConflict, onDismiss: { model.conflictSheetDismissed() }) { conflict in
             ConflictSheet(conflict: conflict)
+                .onDisappear { conflict.cancel() }
         }
         .sheet(isPresented: $model.showWarnings) {
             WarningsSheet(warnings: model.planWarnings)
+        }
+        .sheet(item: $model.photoImportSession, onDismiss: { model.invalidatePreviewThumbnails() }) { session in
+            PhotoImportSheet(session: session)
         }
         .alert(
             "Finder",
@@ -103,6 +107,12 @@ struct BrowserToolbar: ToolbarContent {
 
     var body: some ToolbarContent {
         ToolbarItemGroup {
+            Button { model.presentPhotoImport() } label: {
+                Label("Import Photos", systemImage: "photo.on.rectangle.angled")
+            }
+            .disabled(!model.canImportPhotos)
+            .help("Import photos and videos from this phone")
+
             Button {
                 Task { await model.refreshBothPanes() }
             } label: {

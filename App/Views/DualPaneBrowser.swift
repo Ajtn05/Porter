@@ -73,6 +73,12 @@ struct MacPane: View {
 
             LocalBreadcrumbBar(directory: model.localDirectory) { model.open(localDirectory: $0) }
 
+            if let message = model.localError {
+                InlineErrorBanner(message: message) {
+                    model.retryLocalNavigation()
+                }
+            }
+
             HSplitView {
                 FileTable(
                     rows: model.localEntries.map(FileRow.init),

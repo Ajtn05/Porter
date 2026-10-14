@@ -63,8 +63,13 @@ public struct ConflictContext: Hashable, Sendable {
 public enum ConflictNaming {
     /// Produces Finder's "keep both" naming: `photo.jpg` -> `photo 2.jpg` ->
     /// `photo 3.jpg`.
-    public static func uniqueName(for name: String, existing: Set<String>) -> String {
-        guard existing.contains(name) else { return name }
+    public static func uniqueName(for name: String, existing: Set<String>, caseInsensitive: Bool = false) -> String {
+        func key(_ value: String) -> String {
+            caseInsensitive ? value.folding(options: [.caseInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+                .precomposedStringWithCanonicalMapping : value
+        }
+        let occupied = Set(existing.map(key))
+        guard occupied.contains(key(name)) else { return name }
         let nsName = name as NSString
         let ext = nsName.pathExtension
         let stem = ext.isEmpty ? name : nsName.deletingPathExtension
@@ -82,7 +87,7 @@ public enum ConflictNaming {
         var index = start
         while true {
             let candidate = "\(base) \(index)\(suffix)"
-            if !existing.contains(candidate) { return candidate }
+            if !occupied.contains(key(candidate)) { return candidate }
             index += 1
             // A directory with 10k same-named files is pathological, but an
             // unbounded loop here would hang the transfer.
