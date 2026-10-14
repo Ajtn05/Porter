@@ -1,281 +1,100 @@
 <div align="center">
-<img src="Branding/porter-icon.svg" width=256>
+
+<img src="Branding/porter-icon.svg" alt="Porter app icon" width="112">
 
 # Porter
 
-A free, native macOS app for moving files to and from an Android phone over a
-USB cable. It supports USB debugging (ADB) and standard Android File Transfer
-mode (MTP), so USB debugging is optional.
+### Your Android files, on your Mac.
 
-Google discontinued Android File Transfer in May 2024. Porter aims to replace
-it with resumable, checksum-verified ADB transfers and direct MTP support.
+Browse, preview, and copy files in both directions over USB.A free, native macOS app with optional USB debugging.
+
+**macOS 14+ · Apple silicon & Intel · Free & open source**
+
+[Releases](https://github.com/Ajtn05/Porter/releases) ·
+[Get started](#get-started) ·
+[User guide](Docs/user-guide.md)
+
 </div>
 
-## Status
+![Porter showing Mac and Android files side by side with a connected Samsung phone](Docs/images/porter-browser.png)
 
-Version 1.1.0 is being prepared as a GitHub release. The universal release build
-bundles ADB; public distribution signing and notarization are pending. See the
-[v1.1.0 release notes](Docs/releases/v1.1.0.md) for installation and known limits.
+<p align="center"><sub>Your Mac on the left. Your Android on the right. Both in one window.</sub></p>
 
-Early functionality has been tested with a Galaxy S22 on Android 16. It can
-browse and copy over USB debugging (ADB) or normal File Transfer mode (MTP).
+## A familiar place for your files
 
+Bring photos and videos onto your Mac, send documents to your phone, or move
+a whole folder in one go. Open the source and destination side by side, then
+drag files across or use **⌘C** and **⌘V**. Files copied in Finder can be pasted
+straight into Porter's Android pane.
 
-**Works:** USB discovery identifies file-transfer mode separately from
-charge-only mode. When a phone is available through both cable transports,
-Porter uses the faster ADB connection; when it is only in File Transfer mode,
-it falls back to MTP automatically. Both transports support volume and folder
-browsing, creating folders, deleting, renaming, moving within a volume, and
-copying files in both directions. Conflict handling, filename sanitising, and
-the available preflight checks for free space and the FAT32 4 GiB ceiling are
-shared by the transfer engine.
+| Browse your way | Know what you're copying | Keep track of each copy |
+| --- | --- | --- |
+| Switch each pane between list and icon views. Sort by name, date, size, or kind, and use Back and Forward to revisit folders. | Preview a selected file and its details, or open it in Quick Look with Space. Image thumbnails help you find the right photo. | Follow transfers in the queue. Resolve filename conflicts before copying, with free-space and file-size checks where the phone supports them. |
 
-ADB transfers have block-aligned resume, modification-date preservation, and
-SHA-256 verification against the device. Small ADB files are batched for both
-pulling and hashing: files at or below 8 MiB can share one `adb pull` and one
-`sha256sum` call instead of paying two round trips per file.
+Create folders, rename files, and organize storage on either side. Each pane
+remembers its view, sorting, column widths, and preview preferences.
 
-**Measured with ADB:** 30 MB/s against a 37.6 MB/s `adb pull` baseline, with
-checksum verification. A 3 GB / 716-file batch completed with 716 verified
-and no failures. The small-file batching implementation is covered by fake
-device tests; its real-device throughput still needs measuring.
+## See more before you copy
 
-## Browser views and previews
+![Close-up of the Android pane with a selected photo, image preview, file details, and Quick Look](Docs/images/porter-previews.png)
 
-The Mac and Android panes have separate saved view modes, sort orders,
-hidden-file rules, and icon-preview toggles. Use the controls in each pane's
-header to switch between list and icon view independently.
+The preview sidebar and Quick Look work with files on both devices. Each pane
+has its own view controls, so you can browse one as a list and the other as
+icons. On MTP connections, Porter prefers thumbnails supplied by the phone.
 
-Click a pane to make it active; its header has an accent underline. File and
-navigation commands target that pane. Return renames the selection, Command-Down
-opens it, Command-Up opens the parent folder, and Shift-Command-N creates a folder
-on either the Mac or the phone. Space or Command-Y opens Quick Look. Command-1
-and Command-2 switch the active pane to icons and list, and Shift-Command-P
-toggles its preview sidebar.
+## One cable. Two ways to connect.
 
-Each pane has independent Back and Forward buttons and Command-[ / Command-]
-history. Returning to a folder restores its selection and scroll position;
-refresh preserves selections of files still present. Phone history resets when
-switching devices or storage volumes and commits only after a folder loads.
-List view uses native, resizable Name, Date Modified, Size, and Kind columns.
-Click a header to sort; each pane saves its own widths and sorting preferences.
+**File Transfer mode works without USB debugging.** Unlock the phone and choose
+File Transfer in Android's USB options. Porter uses MTP to browse and copy.
 
-Each pane has an optional preview sidebar showing the selected file's thumbnail
-and metadata, with Quick Look and a summary for multiple selections. Its width
-can be resized, and each pane's sidebar button hides or shows its own preview.
-Settings saves the Mac and Android sidebar toggles independently. The Mac
-sidebar previews local files directly and shares the Mac icon thumbnail cache.
-Icon view also shows thumbnails for supported images, movies, PDFs, text, and documents
-when macOS can generate them. Unsupported files keep their file-type icons.
+**Enable USB debugging for resume and verification.** Authorize the Mac on your
+phone and Porter prefers ADB automatically. ADB transfers can resume after an
+interruption and compare SHA-256 checksums with the device. Release builds
+include ADB.
 
-MTP icon previews prefer native thumbnails supplied by the phone, including
-for large originals, instead of downloading full files. Missing thumbnails keep
-the file-type icon. Settings can enable slower full-file icon fallbacks, capped
-at 16 MB per file and 64 MB per folder visit. Selection previews can use a
-bounded full-file fallback; Quick Look explicitly loads larger files.
+| Capability | File Transfer (MTP) | USB debugging (ADB) |
+| --- | --- | --- |
+| Browse and copy in both directions | Yes | Yes |
+| Resume an interrupted copy | Restarts from the beginning | Supported |
+| Verify against a device-side checksum | Unavailable; copies are marked not verified | Supported |
+| Preserve modification dates | Best effort | Supported |
 
-Fetches run one at a time and pause during directory loading and transfers.
-A bounded memory cache shares images between the sidebar and icons and reuses
-them across folder visits. File bytes used for fallbacks are deleted after
-rendering. Refresh and device changes clear the remote image cache. Settings
-also contains the preview/sidebar options, each pane's preferences, and the
-menu bar button toggle; choices persist across launches.
+Files use a temporary name while copying; the final name appears when the
+copy is complete. Read more about [connection and transfer behavior](Docs/user-guide.md#file-transfer-mode-mtp).
 
-The storage root also uses one property-list request where supported, with
-handle 0 and depth 0, then filters the result by storage and parent. This avoids
-per-item metadata round trips without recursively enumerating the phone.
-Unsupported or incomplete replies use the ordinary handle/object-info path.
-The wire shapes follow [Android's MTP database implementation](https://android.googlesource.com/platform/frameworks/base/+/master/media/java/android/mtp/MtpDatabase.java)
-and [native thumbnail API](https://developer.android.com/reference/android/mtp/MtpDevice#getThumbnail(int)).
+## Get started
 
-## MTP, without USB debugging
+1. **Open Porter.** Requires macOS 14 or later.
+2. **Connect and unlock your Android.** Use a USB cable that carries data, then
+   select **File Transfer** on the phone. Start Porter before plugging it in.
+3. **Choose your folders and copy.** Select the phone's storage in the sidebar,
+   open a folder in each pane, and drag or copy and paste between them.
 
-MTP is the fallback for a wired phone that is in File Transfer mode but has not
-enabled USB debugging. Porter implements the MTP wire protocol, USB bulk pipe,
-and session layer directly. Its transactions are serialised, so a quick folder
-change cannot consume another request's reply.
+**Release status:** v1.1.0 is being prepared. The universal build includes ADB;
+public distribution signing and notarization remain pending. Check the
+[release notes](Docs/releases/v1.1.0.md) for installation details and known limits,
+or [build from source](Docs/development.md#building-and-checks).
 
-MTP has protocol limits that Porter exposes rather than conceals: one transfer
-runs at a time; interrupted transfers restart rather than resume; device-side
-checksums are unavailable, so completed transfers are marked unverified; and
-modification-date preservation and free-space or file-size reports are best
-effort. Enable USB debugging when resumable, checksum-verified transfers are
-more important than avoiding the developer option.
+## A few things to know
 
-macOS normally gives the MTP interface to `ptpcamerad`, and that exclusive
-claim cannot be taken back. Porter starts an interface claimer with the app and
-races it when the phone is attached. Start Porter before connecting the phone.
-If another app wins, Porter prompts you to ask it to quit, then reconnect the
-phone so Porter can claim MTP. If macOS's `ptpcamerad` wins, Porter explains
-that the system service cannot be closed and prompts you to reconnect instead.
-`porterctl mtp` identifies
-the process holding the interface, and `porterctl mtp-watch` reports the result
-of each attach. Porter only claims known Android phones, never cameras. While
-it holds a phone's MTP interface, Photos and Image Capture cannot use that
-phone until it is unplugged.
+- **Phone not showing up?** Unlock it, check the cable, and select File Transfer.
+  If another app or macOS claimed its MTP connection first, reconnect with
+  Porter already running. [Connection help →](Docs/user-guide.md#file-transfer-mode-mtp)
+- **Can I use Finder?** Finder access is an experimental, read-only extension
+  that still needs signed, real-device validation. Use Porter's browser for
+  transfers.
+- **Will it work with my phone?** Early testing used a Galaxy S22 on Android 16.
+  Wider device compatibility and sustained-load testing are still in progress.
+- **Does it need an account or cloud service?** No. Porter transfers over USB
+  without accounts, a cloud relay, or telemetry.
 
-## Next
+## Open source, built for macOS
 
-1. **Validate Finder access.** A read-only File Provider extension can register
-   a phone in Finder and asks the host app to materialize whole files through
-   an App-Group bridge. Signed, on-device Finder browsing and downloads still
-   need integration testing before this is a supported path.
-2. **Measure MTP on real devices.** Check large files, mixed folders, and
-   device compatibility before changing USB buffer sizes or transaction shape.
-3. **Phase 3:** photo import, watched folders, and APK sideloading.
+Porter uses SwiftUI and a shared Swift transfer engine. It is licensed under
+[GPL-3.0](LICENSE). Bug reports, device compatibility reports, and contributions
+are welcome on [GitHub](https://github.com/Ajtn05/Porter/issues).
 
-Developer ID signing and notarisation remain release work. The release script
-bundles a checksum-pinned ADB binary and its notices. Sustained multi-hour throughput also
-needs testing; it falls as the phone throttles under load.
-
-## Layout
-
-```
-Kit/                    Swift package - all the logic, no UI
-  Sources/PorterKit/
-    Model/              Paths, devices, volumes, errors
-    Transport/          DeviceTransport, ADB, and MTP
-    Engine/             Queue, planner, and the copy engine
-    Discovery/          USB bus watching and device merging
-    Support/            Checksums, sanitising, throughput
-  Sources/porterctl/       Read-only diagnostic CLI
-  Tests/                Swift package tests
-App/                    The SwiftUI app
-FileProvider/           Read-only Finder extension
-FileProviderShared/     App-Group request and metadata types
-project.yml             XcodeGen input; generates Porter.xcodeproj
-```
-
-
-## Comment conventions
-
-Comments explain **why**, never **what** — they record a measurement, name a bug
-that was hit, or explain why an obvious alternative was rejected. A comment that
-only restates its code should be deleted rather than reworded.
-
-The register is flat, and uniform across the codebase:
-
-- Third person. No `we`, `us`, `our`, or `you` in a comment.
-- The engineering reason, not the product reason. "Auto-select the first
-  browsable device so plugging in a phone is enough to start browsing", not
-  "making the user click it is friction for nothing".
-- No editorialising. State the guarantee rather than praising it.
-- ASCII punctuation. Em dashes and typographic quotes are used deliberately in
-  user-facing strings; comments use a comma, a colon, or a new sentence.
-- `///` for API docs, `//` for inline notes. A doc comment opens with one
-  declarative sentence; anything longer goes in a second paragraph after a
-  blank `///` line.
-- A test pinning a past bug opens with `// Regression:`.
-
-None of that licenses stripping comments back to nothing. The specifics are why
-they are worth reading — superblock magic numbers, the measured 37.6 against
-15.7 MB/s, why `iflag=skip_bytes` is avoided, why a cancelled task must be
-awaited. Keep every one of those; cut only the narration around them.
-
-
-## Building
-
-```bash
-cd Kit && swift test
-```
-
-```bash
-bash Scripts/fetch-platform-tools.sh
-rm -rf build/Porter.app build/DerivedData
-xcodegen generate
-xcodebuild -project Porter.xcodeproj -scheme Porter -configuration Release \
-  -derivedDataPath build/DerivedData build
-ditto build/DerivedData/Build/Products/Release/Porter.app build/Porter.app
-codesign --verify --deep --strict build/Porter.app
-rm -rf build/DerivedData
-```
-
-Every app build replaces the previous output at `build/Porter.app`. Build
-intermediates use `build/DerivedData` and are removed after verification. The
-repository-wide build and sandbox rules are in [AGENTS.md](AGENTS.md).
-
-Browser state checks run without launching the app or contacting a phone:
-
-```bash
-bash Scripts/test-browser-state.sh
-bash Scripts/test-app-browser.sh
-```
-
-The app browser checks use temporary fixture folders under `build/` to exercise
-navigation and refresh in the real app model without launching Porter or
-contacting a phone.
-
-macOS 14+, Xcode 26. The app target needs a signing team; set `DEVELOPMENT_TEAM`
-in `project.yml`.
-
-The Xcode project compiles the `Kit/Sources/PorterKit` sources as a local static
-library target. `Kit/` also remains a Swift package for tests and the diagnostic
-CLI. Building the app does not require Swift package resolution.
-
-### Release packaging
-
-Commit the release changes before packaging. The script requires a clean
-checkout and `Docs/releases/v<version>.md` matching `project.yml`, so the
-source archive and metadata identify the exact code compiled into the app.
-
-```bash
-bash Scripts/fetch-platform-tools.sh
-bash Scripts/build-release.sh
-```
-
-The script builds both Mac architectures, verifies the embedded extension and
-bundled ADB, and writes a ZIP, source archive, checksums, and build metadata to
-`build/release/`. The single unpacked app remains at `build/Porter.app`.
-Without `PORTER_SIGNING_IDENTITY`, the output is ad hoc signed for testing and
-is not notarized. Set that variable to a Developer ID Application identity for
-distribution signing; notarization must still be completed separately.
-
-## The diagnostic CLI
-
-`porterctl` runs the same transport code the app runs and prints what it saw.
-
-```bash
-cd Kit && swift build --product porterctl
-./.build/debug/porterctl devices
-```
-
-```
-adb: /Users/you/Library/Android/sdk/platform-tools/adb
-R5CT502XWRL  SM S901E  [adb]  ready
-    usb 04e8:6860  interfaces: 6/1/1 2/2/1 10/0/0 255/66/1
-```
-
-Interface numbers let the app distinguish a phone in file-transfer mode from
-one that is only charging.
-
-Other commands: `volumes`, `ls`, `biggest`, `pull`, `pull-tree`, `resume-test`,
-`checksum`, and `mtp`, which drives the MTP transport directly and reports what
-is holding the still-image interface. `mtp-watch` reports whether Porter won
-that interface on each subsequent attach. The two MTP commands do not use ADB.
-
-## Decision Considerations
-
-**Transport and interface.** `ADBTransport` is preferred because it can seek
-within a file, hash a file in place, report reliable sizes, and set an mtime.
-`MTPTransport` is the direct USB fallback for phones without USB debugging.
-Both publish `TransportCapabilities`, and the engine reads those rather than switching on
-the transport kind.
-
-**Partial files.** In-flight bytes live in a `.porterpart` sidecar. The real
-filename only appears once the file is complete. ADB can resume an aligned
-partial after a disconnect; MTP deliberately restarts it because ranged reads
-and resumable writes are not dependable across Android MTP implementations.
-
-**Verification.** With ADB, the device hashes its own copy and
-Porter hashes its copy; a mismatch discards the result. MTP has no device-side
-checksum operation, so an MTP transfer can complete but is marked *unverified*.
-
-
-
-**Errors.** "This phone is connected but set to
-charge only" will show steps to fix it instead of showing "no storage found".
-
-## Non-goals
-
-Will not be implemeting cloud relay, account system, screen mirroring, SMS bridging, or 
-remote control. No telemetry. This is a file transfer tool lol.
+[Development & builds](Docs/development.md) ·
+[Architecture](Docs/architecture.md) ·
+[Implementation status](Docs/status.md) ·
+[Testing notes](Docs/testing-notes.md)
