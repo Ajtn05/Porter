@@ -47,6 +47,37 @@ extension AppModel {
 
     // MARK: - Copying
 
+    func copySelectionToClipboard(in pane: BrowserPane) {
+        if pane == .mac {
+            clipboard.copy(localEntries.filter { localSelection.contains($0.id) }.map(\.url))
+        } else {
+            guard !isLoadingDevice, let device = selectedDevice, device.readiness.isBrowsable else { return }
+            clipboard.copy(RemoteFileDrag(deviceID: device.id.rawValue,
+                paths: deviceEntries.filter { deviceSelection.contains($0.id) }.map { $0.path.string }))
+        }
+    }
+
+    func clipboardPasteRequest(in pane: BrowserPane) -> BrowserPasteRequest? {
+        clipboard.pasteRequest(in: pane, localDirectory: localDirectory, devicePath: devicePath,
+            selectedDevice: selectedDevice, selectedVolume: selectedVolume, devices: devices,
+            isLoadingDevice: isLoadingDevice,
+            includeHidden: pane == .mac ? androidView.showHiddenFiles : macView.showHiddenFiles)
+    }
+
+    func pasteClipboard(in pane: BrowserPane) {
+        clipboard.refresh()
+        guard canUseActivePane, let request = clipboardPasteRequest(in: pane) else { return }
+        Task {
+            do {
+                let transport = try await coordinator.transport(for: request.deviceID)
+                let plan = try await request.plan(using: transport, conflicts: InteractiveConflictResolver(model: self))
+                await present(plan)
+            } catch {
+                reportPlanFailure(error)
+            }
+        }
+    }
+
     /// Copies the device-pane selection into the current Mac directory.
     func copySelectionToMac() {
         let selected = deviceEntries.filter { deviceSelection.contains($0.id) }

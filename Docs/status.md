@@ -1,19 +1,33 @@
 # Status
 
-Current implementation snapshot: 12 October 2026.
+Current implementation snapshot: 13 October 2026.
 
 | Area | State | Remaining boundary |
 | --- | --- | --- |
 | ADB USB transfers | Implemented | Earlier Galaxy S22 testing exercised browse and copy. Resume, checksums, modification dates, and small-file batching have package test coverage. |
 | MTP USB transfers | Implemented | Direct protocol codec, USB pipe, session, interface claimer, and transport are present. The session serializes metadata requests and a complete upload as one exchange. More real-device performance and compatibility measurements are needed. |
 | Finder File Provider | Read-only source prototype | The extension enumerates storage and asks the host app to materialize files through an App-Group bridge. Signed Finder registration and downloads need on-device validation. |
-| Browser views and previews | Implemented | Commands target the active pane, with Finder keyboard bindings, independent Back/Forward histories, and selection/scroll restoration. Native list columns resize and sort, with saved widths per pane. The Android sidebar and icons prefer native MTP thumbnails and defer previews during directory loading. Layout, dragging, and thumbnail rendering still need runtime validation. |
+| Browser views and previews | Implemented | Commands target the active pane, with Finder keyboard bindings, clipboard transfers between panes, independent Back/Forward histories, and selection/scroll restoration. Finder file URLs can be pasted into the Android pane. Native list columns resize and sort, with saved widths per pane. The Android sidebar and icons prefer native MTP thumbnails and defer previews during directory loading. Desktop clipboard behavior, layout, dragging, and thumbnail rendering still need runtime validation. |
 | Phase 3 | Partial | Quick Look materializes a selected remote file. Photo import, watched folders, and APK sideloading remain future work. |
 
 The Android companion and paired Wi-Fi transfer path have been removed. Porter
 connects to phones over USB through ADB or MTP.
 
 ## Build verification
+
+On 13 October 2026, clipboard transfers passed eight scenario checks alongside
+the fifteen browser state checks, six app-model checks, and all 184 package
+tests in 22 suites. The clipboard checks exercise native Mac file URL
+representations, source and destination capture, phone readiness, recursive
+planning, conflict choices, refreshed metadata, and invalidated clipboard
+contents. They use in-memory AppKit pasteboard items and a fake phone because
+the workspace sandbox cannot access the macOS pasteboard service. A universal
+Release app, bundled ADB, and embedded Finder extension passed architecture,
+bundle, and ad hoc signature checks. The compiler's nested sandbox was disabled
+while the workspace sandbox remained enabled. The current app is at
+`build/Porter.app`; build intermediates were removed. Porter was not launched,
+and desktop clipboard behavior and real-phone transfers still need runtime
+validation.
 
 On 12 October 2026, the browser work passed fifteen command-line state checks
 and six checks against the app model using local fixture folders. Coverage

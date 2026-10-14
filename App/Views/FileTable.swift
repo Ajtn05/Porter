@@ -78,6 +78,9 @@ struct FileTable: View {
     let onDelete: () -> Void
     let onCopyAcross: () -> Void
     let copyAcrossTitle: String
+    let onCopy: () -> Void
+    let onPaste: () -> Void
+    let canPaste: Bool
     /// Supplied by the Mac pane. Vends a file URL, so rows also drag to Finder.
     var dragProvider: ((String) -> URL?)?
     /// Supplied by the device pane. Vends the path list the Mac pane fetches.
@@ -148,7 +151,7 @@ struct FileTable: View {
         NativeFileTable(rows: rows, selection: $selection, preferences: $preferences,
                         pane: pane, scrollAnchor: scrollAnchor, scrollRevision: scrollRevision,
                         onScroll: onScroll, onActivate: onActivate, onCommand: perform,
-                        onOpen: open, copyAcrossTitle: copyAcrossTitle,
+                        onOpen: open, copyAcrossTitle: copyAcrossTitle, canPaste: canPaste,
                         dragProvider: dragProvider, remoteDragProvider: remoteDragProvider,
                         remoteFolderDrop: remoteFolderDrop, localFolderDrop: localFolderDrop,
                         remoteDrop: remoteDrop, localDrop: localDrop)
@@ -224,6 +227,10 @@ struct FileTable: View {
             perform(.rename)
             return .handled
         }
+        .contextMenu {
+            Button("Paste") { onActivate(); onPaste() }
+                .disabled(!canPaste)
+        }
     }
 
     private func restoreGridScroll(_ proxy: ScrollViewProxy) {
@@ -239,6 +246,8 @@ struct FileTable: View {
         case .quickLook: preview()
         case .delete: if !selection.isEmpty { onDelete() }
         case .copyAcross: if !selection.isEmpty { onCopyAcross() }
+        case .copy: if !selection.isEmpty { onCopy() }
+        case .paste: if canPaste { onPaste() }
         case .selectAll: selection = Set(rows.map(\.id))
         case .newFolder: break
         }
@@ -251,6 +260,13 @@ struct FileTable: View {
             if !selection.contains(row.id) { selection = [row.id] }
             onCopyAcross()
         }
+        Button("Copy") {
+            onActivate()
+            if !selection.contains(row.id) { selection = [row.id] }
+            onCopy()
+        }
+        Button("Paste") { onActivate(); onPaste() }
+            .disabled(!canPaste)
         Divider()
         Button("Quick Look") {
             selection = [row.id]

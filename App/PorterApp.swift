@@ -51,6 +51,7 @@ struct PorterCommands: Commands {
     @FocusedValue(\.porterBrowser) private var browserIsVisible
 
     private var canUseActivePane: Bool { browserIsVisible == true && model.canUseActivePane }
+    private var isEditingText: Bool { NSApp.keyWindow?.firstResponder is NSTextView }
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -67,6 +68,28 @@ struct PorterCommands: Commands {
             Button("Quick Look") { model.requestBrowserCommand(.quickLook) }
                 .keyboardShortcut("y", modifiers: .command)
                 .disabled(!canUseActivePane || model.activeSelectionCount != 1)
+        }
+        CommandGroup(replacing: .pasteboard) {
+            Button("Cut") {
+                NSApp.sendAction(#selector(NSText.cut(_:)), to: nil, from: nil)
+                model.clipboard.refresh()
+            }
+            .keyboardShortcut("x", modifiers: .command)
+            .disabled(!isEditingText)
+            Button("Copy") {
+                if isEditingText {
+                    NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil)
+                    model.clipboard.refresh()
+                } else { model.requestBrowserCommand(.copy) }
+            }
+            .keyboardShortcut("c", modifiers: .command)
+            .disabled(!isEditingText && (!canUseActivePane || model.activeSelectionCount == 0))
+            Button("Paste") {
+                if isEditingText { NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: nil) }
+                else { model.requestBrowserCommand(.paste) }
+            }
+            .keyboardShortcut("v", modifiers: .command)
+            .disabled(!isEditingText && (!canUseActivePane || model.clipboardPasteRequest(in: model.activePane) == nil))
         }
         CommandGroup(after: .pasteboard) {
             Button("Select All") {

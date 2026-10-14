@@ -175,12 +175,14 @@ final class AppModel {
 
     let coordinator: DeviceCoordinator
     let engine: TransferEngine
+    let clipboard: BrowserClipboard
     private let queue: TransferQueue
     private let fileProviderHost: PorterFileProviderHost
     private var eventTask: Task<Void, Never>?
     private var deviceTask: Task<Void, Never>?
 
-    init() {
+    init(clipboard: BrowserClipboard = BrowserClipboard()) {
+        self.clipboard = clipboard
         let queue = TransferQueue()
         let coordinator = DeviceCoordinator()
         self.queue = queue

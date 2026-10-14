@@ -17,6 +17,7 @@ struct NativeFileTable: NSViewRepresentable {
     let onCommand: (BrowserCommand) -> Void
     let onOpen: (String) -> Void
     let copyAcrossTitle: String
+    let canPaste: Bool
     var dragProvider: ((String) -> URL?)?
     var remoteDragProvider: ((Set<String>) -> RemoteFileDrag?)?
     var remoteFolderDrop: (([RemoteFileDrag], String) -> Bool)?
@@ -122,7 +123,7 @@ struct NativeFileTable: NSViewRepresentable {
 
     @MainActor
     final class Coordinator: NSObject, NSTableViewDelegate, NSTableViewDataSource {
-        static let remoteType = NSPasteboard.PasteboardType("app.porter.remote-files")
+        static let remoteType = BrowserClipboard.remoteFilesType
         var parent: NativeFileTable
         weak var table: BrowserTableView?
         var isUpdating = false
@@ -228,10 +229,15 @@ struct NativeFileTable: NSViewRepresentable {
         }
 
         func menu(for row: Int) -> NSMenu? {
-            guard parent.rows.indices.contains(row), let table else { return nil }
+            guard let table else { return nil }
             parent.onActivate()
-            if !table.selectedRowIndexes.contains(row) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
             let menu = NSMenu()
+            menu.autoenablesItems = false
+            guard parent.rows.indices.contains(row) else {
+                menu.addItem(pasteMenuItem())
+                return menu
+            }
+            if !table.selectedRowIndexes.contains(row) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
             let actions: [(String, Int)] = [("Open", 0), (parent.copyAcrossTitle, 1), ("Quick Look", 2), ("Rename…", 3)]
             for (title, tag) in actions {
                 let item = NSMenuItem(title: title, action: #selector(menuAction(_:)), keyEquivalent: "")
@@ -240,6 +246,11 @@ struct NativeFileTable: NSViewRepresentable {
                 item.representedObject = parent.rows[row].id
                 menu.addItem(item)
             }
+            let copy = NSMenuItem(title: "Copy", action: #selector(menuAction(_:)), keyEquivalent: "")
+            copy.target = self
+            copy.tag = 5
+            menu.addItem(copy)
+            menu.addItem(pasteMenuItem())
             menu.addItem(.separator())
             let delete = NSMenuItem(title: parent.pane == .mac ? "Move to Trash" : "Delete…",
                                     action: #selector(menuAction(_:)), keyEquivalent: "")
@@ -249,10 +260,20 @@ struct NativeFileTable: NSViewRepresentable {
             return menu
         }
 
+        private func pasteMenuItem() -> NSMenuItem {
+            let item = NSMenuItem(title: "Paste", action: #selector(menuAction(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = 6
+            item.isEnabled = parent.canPaste
+            return item
+        }
+
         @objc private func menuAction(_ item: NSMenuItem) {
             switch item.tag {
             case 0: if let id = item.representedObject as? String { parent.onOpen(id) }
             case 1: parent.onCommand(.copyAcross)
+            case 5: parent.onCommand(.copy)
+            case 6: parent.onCommand(.paste)
             case 2:
                 if let id = item.representedObject as? String { parent.selection = [id] }
                 parent.onCommand(.quickLook)

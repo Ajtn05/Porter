@@ -93,6 +93,9 @@ struct MacPane: View {
                     onDelete: { model.trashSelectedOnMac() },
                     onCopyAcross: { model.copySelectionToDevice() },
                     copyAcrossTitle: "Copy to Device",
+                    onCopy: { model.copySelectionToClipboard(in: .mac) },
+                    onPaste: { model.pasteClipboard(in: .mac) },
+                    canPaste: model.clipboardPasteRequest(in: .mac) != nil,
                     dragProvider: { id in
                         model.localEntries.first { $0.id == id }?.url
                     },
@@ -222,6 +225,9 @@ struct DevicePane: View {
                     onDelete: { isConfirmingDelete = true },
                     onCopyAcross: { model.copySelectionToMac() },
                     copyAcrossTitle: "Copy to Mac",
+                    onCopy: { model.copySelectionToClipboard(in: .android) },
+                    onPaste: { model.pasteClipboard(in: .android) },
+                    canPaste: model.clipboardPasteRequest(in: .android) != nil,
                     remoteDragProvider: { ids in
                         guard let deviceID = model.selectedDeviceID else { return nil }
                         return RemoteFileDrag(deviceID: deviceID.rawValue, paths: Array(ids))

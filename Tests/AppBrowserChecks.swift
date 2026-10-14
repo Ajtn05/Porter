@@ -9,7 +9,7 @@ struct AppBrowserChecks {
         if !condition { throw BrowserCheckFailed(message: message) }
     }
 
-    static func main() throws {
+    static func main() async throws {
         let manager = FileManager.default
         let root = URL(fileURLWithPath: manager.currentDirectoryPath)
             .appendingPathComponent("build/browser-fixture-\(UUID().uuidString)", isDirectory: true)
@@ -50,5 +50,7 @@ struct AppBrowserChecks {
         try check(model.localHistory.forwardDestination == nil && model.localDirectory == root.deletingLastPathComponent(),
                   "Navigating to a new parent kept an obsolete Forward branch")
         print("App browser checks: 6 passed")
+        let clipboardChecks = try await ClipboardChecks.run(in: root)
+        print("Clipboard checks: \(clipboardChecks) passed")
     }
 }

@@ -13,7 +13,7 @@ enum BrowserPane: String {
 }
 
 enum BrowserCommand {
-    case newFolder, rename, open, quickLook, delete, copyAcross, selectAll
+    case newFolder, rename, open, quickLook, delete, copyAcross, copy, paste, selectAll
 }
 
 struct BrowserCommandRequest {

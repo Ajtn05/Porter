@@ -47,3 +47,39 @@ The read-only File Provider extension cannot spawn `adb` from its sandbox. It
 sends metadata and whole-file requests through an App-Group queue to the main
 app, which owns the USB transports. Signed runtime behavior still needs
 on-device validation.
+
+## Transport decisions
+
+**Transport and interface.** `ADBTransport` is preferred because it can seek
+within a file, hash a file in place, report reliable sizes, and set an mtime.
+`MTPTransport` is the direct USB fallback for phones without USB debugging.
+Both publish `TransportCapabilities`, and the engine reads those rather than
+switching on the transport kind.
+
+**Partial files.** In-flight bytes live in a `.porterpart` sidecar. The real
+filename only appears once the file is complete. ADB can resume an aligned
+partial after a disconnect; MTP deliberately restarts it because ranged reads
+and resumable writes are not dependable across Android MTP implementations.
+
+**Verification.** With ADB, the device hashes its own copy and
+Porter hashes its copy; a mismatch discards the result. MTP has no device-side
+checksum operation, so an MTP transfer can complete but is marked *unverified*.
+
+**Errors.** "This phone is connected but set to
+charge only" will show steps to fix it instead of showing "no storage found".
+
+## MTP metadata requests
+
+The storage root also uses one property-list request where supported, with
+handle 0 and depth 0, then filters the result by storage and parent. This avoids
+per-item metadata round trips without recursively enumerating the phone.
+Unsupported or incomplete replies use the ordinary handle/object-info path.
+The wire shapes follow [Android's MTP database implementation](https://android.googlesource.com/platform/frameworks/base/+/master/media/java/android/mtp/MtpDatabase.java)
+and [native thumbnail API](https://developer.android.com/reference/android/mtp/MtpDevice#getThumbnail(int)).
+
+## Small ADB files
+
+Files at or below 8 MiB can share one `adb pull` and one `sha256sum` call. This
+batches downloading and device hashing to avoid two round trips per file.
+The implementation has fake-device test coverage; its real-device throughput
+still needs measuring. See [recorded measurements](development.md#recorded-adb-measurements).

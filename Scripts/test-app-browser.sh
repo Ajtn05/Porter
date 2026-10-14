@@ -22,6 +22,7 @@ else
 fi
 xcrun swiftc -swift-version 6 -parse-as-library -disable-sandbox \
   -module-cache-path build/BrowserTestModuleCache -I "$module_dir" \
-  "${test_sources[@]}" Tests/AppBrowserChecks.swift "${kit_objects[@]}" \
+  "${test_sources[@]}" Tests/AppBrowserChecks.swift Tests/ClipboardChecks.swift \
+  Kit/Tests/PorterKitTests/FakeTransport.swift "${kit_objects[@]}" \
   -o build/app-browser-checks
 build/app-browser-checks

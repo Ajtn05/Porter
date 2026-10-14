@@ -24,6 +24,15 @@ struct ContentView: View {
             .toolbar { BrowserToolbar() }
         }
         .focusedSceneValue(\.porterBrowser, true)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            model.clipboard.refresh()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSText.didEndEditingNotification)) { _ in
+            model.clipboard.refresh()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSControl.textDidEndEditingNotification)) { _ in
+            model.clipboard.refresh()
+        }
         .sheet(item: $model.pendingConflict) { conflict in
             ConflictSheet(conflict: conflict)
         }
